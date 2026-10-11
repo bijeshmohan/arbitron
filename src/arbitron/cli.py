@@ -18,6 +18,7 @@ from arbitron.config import Secrets, load_config
 
 EXIT_OK = 0
 EXIT_INVALID_CONFIG = 1
+EXIT_DATABASE_ERROR = 2
 
 Command = Callable[[argparse.Namespace], Coroutine[None, None, int]]
 
@@ -58,6 +59,61 @@ async def _check_config(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _database_url() -> str | None:
+    url = Secrets().database_url
+    if url is None:
+        print("error: ARBITRON_DATABASE_URL is not set", file=sys.stderr)
+        return None
+    return url.get_secret_value()
+
+
+def _database_failure(action: str, exc: Exception) -> int:
+    # Never echo the URL: it contains the password.
+    print(f"error: {action} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+    return EXIT_DATABASE_ERROR
+
+
+async def _db_upgrade(_args: argparse.Namespace) -> int:
+    from alembic import command  # noqa: PLC0415 - keep CLI startup light
+
+    from arbitron.persistence.db import alembic_config  # noqa: PLC0415
+
+    url = _database_url()
+    if url is None:
+        return EXIT_DATABASE_ERROR
+    try:
+        # Alembic's async env runs its own event loop; keep it off this one.
+        await asyncio.to_thread(command.upgrade, alembic_config(url), "head")
+    except Exception as exc:
+        return _database_failure("migration", exc)
+    print("database schema upgraded to head")
+    return EXIT_OK
+
+
+async def _db_status(_args: argparse.Namespace) -> int:
+    from arbitron.persistence.db import (  # noqa: PLC0415
+        SchemaNotCurrentError,
+        create_engine,
+        verify_schema_current,
+    )
+
+    url = _database_url()
+    if url is None:
+        return EXIT_DATABASE_ERROR
+    engine = create_engine(url, pool_size=1)
+    try:
+        revision = await verify_schema_current(engine)
+    except SchemaNotCurrentError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_DATABASE_ERROR
+    except Exception as exc:
+        return _database_failure("schema check", exc)
+    finally:
+        await engine.dispose()
+    print(f"database schema is current (revision {revision})")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="arbitron",
@@ -69,6 +125,15 @@ def build_parser() -> argparse.ArgumentParser:
     check = subcommands.add_parser("check-config", help="validate a configuration file")
     check.add_argument("config", type=Path, help="path to a TOML config file")
     check.set_defaults(handler=_check_config)
+
+    db = subcommands.add_parser("db", help="database schema management")
+    db_commands = db.add_subparsers(dest="db_command", required=True, metavar="DB_COMMAND")
+    db_commands.add_parser("upgrade", help="apply migrations up to head").set_defaults(
+        handler=_db_upgrade
+    )
+    db_commands.add_parser(
+        "status", help="verify the schema is at the head this build expects"
+    ).set_defaults(handler=_db_status)
 
     return parser
 

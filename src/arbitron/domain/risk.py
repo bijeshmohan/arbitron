@@ -68,7 +68,7 @@ class RiskDecision:
         return not self.reasons
 
 
-_KILL_SWITCH_TRANSITIONS: Final[Mapping[KillSwitchState, frozenset[KillSwitchState]]] = (
+KILL_SWITCH_TRANSITIONS: Final[Mapping[KillSwitchState, frozenset[KillSwitchState]]] = (
     MappingProxyType(
         {
             # Startup recovery may go straight to review (§14.1 step 9).
@@ -115,7 +115,7 @@ class KillSwitch:
     def _to(
         self, target: KillSwitchState, *, at: datetime, actor: str, reason: str
     ) -> "KillSwitch":
-        if target not in _KILL_SWITCH_TRANSITIONS[self.state]:
+        if target not in KILL_SWITCH_TRANSITIONS[self.state]:
             msg = f"kill switch: {self.state} -> {target} is not allowed"
             raise InvalidTransitionError(msg)
         require_utc("at", at)

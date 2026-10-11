@@ -174,7 +174,8 @@ logic stays synchronous and pure; only orchestration and adapters are
 ### 3.3 Module boundaries
 
 -   `domain`: immutable entities, enums, value objects, and domain
-    events; no CCXT, SQLModel, or FastAPI imports.
+    events; standard library only (no CCXT, SQLAlchemy, pydantic, or
+    FastAPI imports).
 -   `application`: use cases and orchestration; coordinates domain
     services and ports.
 -   `ports`: protocols the application depends on. The venue is split
@@ -199,8 +200,8 @@ logic stays synchronous and pure; only orchestration and adapters are
     and reconciliation.
 -   `portfolio`: balances, positions, realized/unrealized P&L, and
     snapshots.
--   `persistence`: SQLModel tables, repositories, migrations,
-    transaction boundaries.
+-   `persistence`: SQLAlchemy tables, repositories, migrations,
+    transaction boundaries, single-instance lock.
 -   `api`: FastAPI read-only endpoints and explicitly authorized
     operator actions.
 -   `monitoring`: structured logs, metrics, health status, and
@@ -227,8 +228,7 @@ arbitron/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
-├── alembic.ini
-├── migrations/
+├── alembic.ini                 # dev tooling; migrations ship in the package
 ├── configs/
 │   ├── example.paper.toml
 │   └── example.live.toml
@@ -303,8 +303,12 @@ arbitron/
 │       │   ├── broker.py
 │       │   └── metrics.py
 │       ├── persistence/
-│       │   ├── db.py
+│       │   ├── db.py               # engine/sessions, schema verification
+│       │   ├── lock.py             # advisory-lock single-instance guard
+│       │   ├── mapping.py          # row <-> domain conversions
 │       │   ├── tables.py
+│       │   ├── unit_of_work.py
+│       │   ├── migrations/         # Alembic env + versions (packaged)
 │       │   └── repositories/
 │       ├── application/
 │       │   ├── engine.py
@@ -332,6 +336,7 @@ arbitron/
 │   └── runbooks/
 └── deploy/
     ├── Dockerfile
+    ├── compose.dev.yaml        # local PostgreSQL for development
     ├── compose.yaml
     └── prometheus.yml
 ```
@@ -350,10 +355,12 @@ Core dependencies:
 
 -   `ccxt` --- exchange REST API, used only via `ccxt.async_support`.
 -   `pydantic-settings` --- configuration.
--   `sqlmodel` --- persistence models, used with SQLAlchemy's async
-    engine (`create_async_engine`, `AsyncSession`). Fall back to plain
-    SQLAlchemy 2.0 typed models if SQLModel's async support blocks a
-    required pattern.
+-   `sqlalchemy[asyncio]` 2.x --- typed declarative table mappings and
+    async engine/sessions. (SQLModel was the original choice; it was
+    replaced because the domain already uses its own dataclasses, so
+    SQLModel's shared model/table classes add a second model layer
+    without benefit, while SQLAlchemy's typed mappings work directly
+    with pyright strict and PostgreSQL features such as `ON CONFLICT`.)
 -   `psycopg[binary]` (v3) --- async PostgreSQL driver
     (`postgresql+psycopg://`).
 -   `alembic` --- schema migrations (async `env.py`).
@@ -506,7 +513,12 @@ because venue semantics differ.
 
 Use PostgreSQL as the durable source for the bot's own decisions and
 lifecycle. Use Alembic migrations; do not rely on `create_all()` in
-production.
+production. Each table is introduced by the migration of the phase that
+first uses it (Phase 2 created candles, signals, orders, order_events,
+fills, risk_decisions, kill_switch, kill_switch_events, and
+system_events). Append-only tables are enforced by a trigger that
+rejects UPDATE and DELETE; enumerated columns are text with CHECK
+constraints.
 
 Minimum tables:
 
@@ -1251,18 +1263,18 @@ and pass an initial test.
 -   [x] Define kill-switch states (`ARMED`/`TRIPPED`/`RECOVERY_REVIEW`).
 -   [x] Use Decimal and UTC-aware datetimes consistently.
 
-**Acceptance:** domain package imports without CCXT, SQLModel, or
+**Acceptance:** domain package imports without CCXT, SQLAlchemy, or
 FastAPI; all invariants have unit tests.
 
 ### Phase 2 --- Persistence
 
--   [ ] Add async PostgreSQL engine/session lifecycle
+-   [x] Add async PostgreSQL engine/session lifecycle
     (`postgresql+psycopg`) and the single-instance advisory lock.
--   [ ] Use `NUMERIC` columns for all financial values (§5).
--   [ ] Implement SQLModel tables and Alembic migrations.
--   [ ] Implement repositories and transaction boundaries.
--   [ ] Add unique constraints and idempotent insert/upsert patterns.
--   [ ] Add append-only order/system event persistence.
+-   [x] Use `NUMERIC` columns for all financial values (§5).
+-   [x] Implement SQLAlchemy tables and Alembic migrations.
+-   [x] Implement repositories and transaction boundaries.
+-   [x] Add unique constraints and idempotent insert/upsert patterns.
+-   [x] Add append-only order/system event persistence.
 
 **Acceptance:** migrations work from empty DB; repository integration
 tests validate transactions, constraints, and deduplication.

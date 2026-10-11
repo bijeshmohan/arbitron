@@ -6,7 +6,8 @@ from decimal import Decimal
 from typing import Any
 
 from arbitron.domain.enums import OrderStatus, OrderType, Side
-from arbitron.domain.market import Timeframe
+from arbitron.domain.fills import ExchangeTrade, Fee
+from arbitron.domain.market import Candle, Timeframe
 from arbitron.domain.orders import Order, OrderIntent
 from arbitron.domain.signals import Signal
 
@@ -78,3 +79,37 @@ def make_order(status: OrderStatus = OrderStatus.CREATED, **overrides: Any) -> O
     }
     fields.update(overrides)
     return replace(Order.new(intent), **fields)
+
+
+def make_candle(**overrides: Any) -> Candle:
+    fields: dict[str, Any] = {
+        "exchange_id": "binance",
+        "symbol": "BTC/USDT",
+        "timeframe": FIVE_MIN,
+        "open_time": T0,
+        "open": Decimal(100),
+        "high": Decimal(110),
+        "low": Decimal(95),
+        "close": Decimal(105),
+        "volume": Decimal(3),
+        "is_closed": True,
+        "ingested_at": at(5),
+    }
+    fields.update(overrides)
+    return Candle(**fields)
+
+
+def make_trade(**overrides: Any) -> ExchangeTrade:
+    fields: dict[str, Any] = {
+        "exchange_id": "binance",
+        "trade_id": "t-1",
+        "exchange_order_id": "ex-1",
+        "symbol": "BTC/USDT",
+        "side": Side.BUY,
+        "amount": Decimal("0.004"),
+        "price": Decimal("49990"),
+        "fee": Fee(Decimal("0.000004"), "BTC"),
+        "timestamp": at(7),
+    }
+    fields.update(overrides)
+    return ExchangeTrade(**fields)

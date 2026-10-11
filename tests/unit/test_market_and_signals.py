@@ -6,26 +6,8 @@ import pytest
 
 from arbitron.domain.enums import MarketType, Side
 from arbitron.domain.errors import DomainValidationError
-from arbitron.domain.market import Candle, Market, Ticker, Timeframe
-from tests.factories import FIVE_MIN, T0, at, make_signal
-
-
-def make_candle(**overrides: Any) -> Candle:
-    fields: dict[str, Any] = {
-        "exchange_id": "binance",
-        "symbol": "BTC/USDT",
-        "timeframe": FIVE_MIN,
-        "open_time": T0,
-        "open": Decimal(100),
-        "high": Decimal(110),
-        "low": Decimal(95),
-        "close": Decimal(105),
-        "volume": Decimal(3),
-        "is_closed": True,
-        "ingested_at": at(5),
-    }
-    fields.update(overrides)
-    return Candle(**fields)
+from arbitron.domain.market import Market, Ticker, Timeframe
+from tests.factories import T0, at, make_candle, make_signal
 
 
 class TestTimeframe:

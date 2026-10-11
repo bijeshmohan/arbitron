@@ -1,31 +1,14 @@
 from decimal import Decimal
-from typing import Any
 
 import pytest
 
-from arbitron.domain.enums import OrderStatus, Severity, Side
+from arbitron.domain.enums import OrderStatus, Severity
 from arbitron.domain.errors import DomainValidationError
 from arbitron.domain.events import Alert, OrderEvent, SystemEvent
-from arbitron.domain.fills import ExchangeTrade, Fee, Fill
+from arbitron.domain.fills import Fee, Fill
 from arbitron.domain.portfolio import Balance, PortfolioView
 from arbitron.domain.positions import Position
-from tests.factories import T0, at, make_intent
-
-
-def make_trade(**overrides: Any) -> ExchangeTrade:
-    fields: dict[str, Any] = {
-        "exchange_id": "binance",
-        "trade_id": "t-1",
-        "exchange_order_id": "ex-1",
-        "symbol": "BTC/USDT",
-        "side": Side.BUY,
-        "amount": Decimal("0.004"),
-        "price": Decimal("49990"),
-        "fee": Fee(Decimal("0.000004"), "BTC"),
-        "timestamp": at(7),
-    }
-    fields.update(overrides)
-    return ExchangeTrade(**fields)
+from tests.factories import T0, make_intent, make_trade
 
 
 class TestFills:

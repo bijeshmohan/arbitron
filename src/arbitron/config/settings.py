@@ -195,7 +195,7 @@ def load_config(path: Path) -> ArbitronConfig:
 
 
 class Secrets(BaseSettings):
-    """Exchange credentials, read only from the environment (or a local ``.env``)."""
+    """Credentials, read only from the environment (or a local ``.env``)."""
 
     model_config = SettingsConfigDict(
         env_prefix="ARBITRON_",
@@ -208,6 +208,8 @@ class Secrets(BaseSettings):
     exchange_api_key: SecretStr | None = None
     exchange_api_secret: SecretStr | None = None
     exchange_api_password: SecretStr | None = None
+    # postgresql+psycopg://user:password@host:5432/dbname
+    database_url: SecretStr | None = None
 
     @property
     def has_exchange_credentials(self) -> bool:

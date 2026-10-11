@@ -6,8 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Bijesh Mohan" }]
 dependencies = [
+    "alembic>=1.20,<2",
+    "psycopg[binary]>=3.3,<4",
     "pydantic>=2.14,<3",
     "pydantic-settings>=2.15,<3",
+    "sqlalchemy[asyncio]>=2.1,<2.2",
 ]
 
 [project.scripts]
@@ -20,6 +23,7 @@ dev = [
     "pytest-asyncio>=1.4,<2",
     "pytest-cov>=7.1,<8",
     "ruff>=0.17,<0.18",
+    "testcontainers[postgres]>=4.15,<5",
 ]
 
 [build-system]
@@ -41,6 +45,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR0913"]
+"src/arbitron/persistence/migrations/versions/**" = ["E501"]  # generated DDL strings
 "src/arbitron/ports/errors.py" = ["N818"]  # names follow the plan's error taxonomy
 
 [tool.pyright]
@@ -54,6 +59,7 @@ testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config", "-ra"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: needs PostgreSQL (Docker via testcontainers, or ARBITRON_TEST_DATABASE_URL)"]
 filterwarnings = ["error"]
 
 [tool.coverage.run]

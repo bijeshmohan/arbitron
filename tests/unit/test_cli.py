@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from arbitron import __version__
-from arbitron.cli import EXIT_INVALID_CONFIG, EXIT_OK, main
+from arbitron.cli import EXIT_DATABASE_ERROR, EXIT_INVALID_CONFIG, EXIT_OK, main
 
 EXAMPLE_PAPER = Path(__file__).parents[2] / "configs" / "example.paper.toml"
 
@@ -88,3 +88,27 @@ def test_check_config_never_prints_secret_values(
     assert "credentials: present" in captured.out
     assert "key-value-123" not in captured.out + captured.err
     assert "secret-value-456" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("subcommand", ["upgrade", "status"])
+def test_db_commands_require_database_url(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], subcommand: str
+) -> None:
+    monkeypatch.delenv("ARBITRON_DATABASE_URL", raising=False)
+
+    assert main(["db", subcommand]) == EXIT_DATABASE_ERROR
+    assert "ARBITRON_DATABASE_URL is not set" in capsys.readouterr().err
+
+
+def test_db_status_never_prints_the_password(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Port 1 refuses connections immediately.
+    monkeypatch.setenv(
+        "ARBITRON_DATABASE_URL", "postgresql+psycopg://user:hunter2-secret@127.0.0.1:1/db"
+    )
+
+    assert main(["db", "status"]) == EXIT_DATABASE_ERROR
+    captured = capsys.readouterr()
+    assert "schema check failed" in captured.err
+    assert "hunter2-secret" not in captured.out + captured.err

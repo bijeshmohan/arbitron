@@ -3,8 +3,11 @@
 All repositories are used inside a ``UnitOfWork``; nothing is durable until
 ``commit()``. Leaving the unit of work without committing rolls back.
 
-Idempotent inserts return ``False`` instead of raising when the row already
-exists, so replays and retries collapse onto the existing record.
+Idempotent inserts return ``False`` instead of raising when an identical row
+already exists, so replays and retries collapse onto the existing record. If
+the existing row has the same identity but different content, they raise
+``ConflictingRecordError``: that signals nondeterminism or a venue
+discrepancy and must never be silently ignored.
 """
 
 from collections.abc import Sequence
@@ -25,11 +28,18 @@ class ConcurrencyConflict(Exception):  # noqa: N818 - domain term, not a generic
     """The stored state no longer matches the state the caller transitioned from."""
 
 
+class ConflictingRecordError(Exception):
+    """A record with the same identity exists with different content, or a
+    write-once record was written twice."""
+
+
 class CandleRepository(Protocol):
     async def upsert(self, candles: Sequence[Candle]) -> int:
-        """Insert or update by candle identity; a closed candle is never reopened.
+        """Insert or update by candle identity; a stored closed candle is never
+        modified or reopened. Returns the number of rows written.
 
-        Returns the number of rows written.
+        Detecting a closed candle that the venue later revised is the market
+        data subsystem's job (compare before upsert).
         """
         ...
 
@@ -51,14 +61,23 @@ class CandleRepository(Protocol):
 
 
 class SignalRepository(Protocol):
-    async def add_if_absent(self, signal: Signal) -> bool: ...
+    async def add_if_absent(self, signal: Signal) -> bool:
+        """Compared on everything except ``created_at`` when a duplicate exists."""
+        ...
 
     async def get(self, signal_id: UUID) -> Signal | None: ...
 
 
 class OrderRepository(Protocol):
+    async def list_events(self, order_id: UUID) -> Sequence[OrderEvent]:
+        """Lifecycle events in insertion order."""
+        ...
+
     async def add_if_absent(self, order: Order, event: OrderEvent) -> bool:
-        """Persist a new ``CREATED`` order and its creating event."""
+        """Persist a new ``CREATED`` order and its creating event.
+
+        A duplicate intent is compared on everything except ``created_at``.
+        """
         ...
 
     async def get(self, order_id: UUID) -> Order | None: ...
@@ -83,11 +102,17 @@ class FillRepository(Protocol):
         """Deduplicated on ``fill.dedupe_key``."""
         ...
 
-    async def list_for_order(self, order_id: UUID) -> Sequence[Fill]: ...
+    async def list_for_order(self, order_id: UUID) -> Sequence[Fill]:
+        """Ascending by trade timestamp."""
+        ...
 
 
 class RiskDecisionRepository(Protocol):
-    async def add(self, decision: RiskDecision) -> None: ...
+    async def add(self, decision: RiskDecision) -> None:
+        """Write-once per intent; a second decision raises ``ConflictingRecordError``."""
+        ...
+
+    async def get_for_intent(self, intent_id: UUID) -> RiskDecision | None: ...
 
 
 class KillSwitchRepository(Protocol):
@@ -102,6 +127,10 @@ class KillSwitchRepository(Protocol):
 
 class SystemEventRepository(Protocol):
     async def append(self, event: SystemEvent) -> None: ...
+
+    async def list_recent(self, limit: int) -> Sequence[SystemEvent]:
+        """Most recent first."""
+        ...
 
 
 class UnitOfWork(Protocol):
