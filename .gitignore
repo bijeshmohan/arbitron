@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+
+# Secrets — never commit; use .env.example as the template
+.env
+.env.*
+!.env.example
+
+# Local configs (examples live in configs/example.*.toml)
+configs/*.toml
+!configs/example.*.toml
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

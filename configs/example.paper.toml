@@ -1,0 +1,42 @@
+# Example paper-trading configuration.
+# Values illustrate the configuration shape only; they are NOT recommended
+# financial limits. Copy to configs/paper.toml (gitignored) and set your own.
+#
+# Financial values are quoted strings so they parse exactly as Decimal;
+# unquoted floats are rejected.
+
+[app]
+mode = "paper"
+environment = "development"
+timezone = "UTC"
+
+[exchange]
+id = "binance"
+sandbox = false
+spot_only = true
+symbols = ["BTC/USDT"]
+request_timeout_ms = 10000
+
+[strategy]
+id = "sma_cross"
+version = "1"
+timeframe = "5m"
+enabled = true
+
+[risk]
+max_order_notional = "50"
+max_asset_exposure = "100"
+max_total_exposure = "100"
+max_open_orders = 2
+max_daily_loss = "10"
+max_drawdown_pct = "5"
+max_market_data_age_seconds = 600
+
+[execution]
+allow_market_orders = false
+submission_timeout_seconds = 15
+reconciliation_interval_seconds = 60
+
+[live]
+enabled = false
+acknowledgement = false
