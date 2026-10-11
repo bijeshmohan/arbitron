@@ -12,7 +12,12 @@ class MarketDataPort(Protocol):
     """
 
     async def load_markets(self) -> Mapping[str, Market]:
-        """Markets keyed by unified symbol."""
+        """(Re)load metadata for the configured symbol allowlist, keyed by unified symbol.
+
+        Raises ``MarketUnavailable`` if an allowlisted symbol is missing or not
+        spot. Inactive markets are returned with ``active=False``; the data
+        quality gate decides what that blocks.
+        """
         ...
 
     async def fetch_ohlcv(
@@ -28,5 +33,9 @@ class MarketDataPort(Protocol):
         ...
 
     async def fetch_ticker(self, symbol: str) -> Ticker: ...
+
+    async def fetch_time(self) -> datetime:
+        """The venue's current time, for clock-skew checks."""
+        ...
 
     async def close(self) -> None: ...

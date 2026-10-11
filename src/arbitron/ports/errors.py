@@ -55,3 +55,10 @@ class UnknownExchangeError(VenueError):
 
 class UnsupportedCapability(VenueError):
     """The venue (or its sandbox) does not support a required operation."""
+
+
+class InvalidVenueData(VenueError):
+    """The venue returned data that fails validation (malformed or violating invariants).
+
+    Never persisted; callers record a data-quality event and fail closed.
+    """

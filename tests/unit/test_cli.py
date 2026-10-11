@@ -112,3 +112,19 @@ def test_db_status_never_prints_the_password(
     captured = capsys.readouterr()
     assert "schema check failed" in captured.err
     assert "hunter2-secret" not in captured.out + captured.err
+
+
+def test_market_sync_rejects_invalid_config(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["market", "sync", str(tmp_path / "missing.toml")]) == EXIT_INVALID_CONFIG
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_market_sync_requires_database_url(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("ARBITRON_DATABASE_URL", raising=False)
+
+    assert main(["market", "sync", str(EXAMPLE_PAPER)]) == EXIT_DATABASE_ERROR
+    assert "ARBITRON_DATABASE_URL is not set" in capsys.readouterr().err

@@ -4,7 +4,7 @@ Autonomous spot crypto trading bot. It runs in backtest and paper modes first,
 and its design rule is **fail closed**: if it can't establish its state with
 confidence, it stops opening positions and asks for review.
 
-> **Status:** Phase 2 (persistence) complete. There is no trading logic yet.
+> **Status:** Phase 3 (Binance market data) complete. There is no trading logic yet.
 > Live mode can't be selected. See [`plan.md`](plan.md) for the full
 > specification and phased roadmap.
 
@@ -63,6 +63,20 @@ uv run alembic revision --autogenerate -m "describe the change"
 Review every generated migration by hand: autogenerate doesn't detect
 changes to CHECK constraints or triggers.
 
+## Market data
+
+Ingest closed candles for the configured symbols from Binance's public API
+(no credentials needed), then run the data-quality gate:
+
+```bash
+uv run arbitron market sync configs/paper.toml            # one cycle
+uv run arbitron market sync configs/paper.toml --follow   # after every candle close
+```
+
+Exit codes: `0` ok, `1` invalid config, `2` database error, `3` the data-quality
+gate is blocking (stale data, missing history, clock skew, inactive market, ...),
+`4` venue request failed.
+
 ## Development
 
 ```bash
@@ -70,7 +84,8 @@ uv run ruff format .          # format
 uv run ruff check .           # lint
 uv run pyright                # type-check (strict)
 uv run pytest --cov           # all tests with coverage (integration needs Docker)
-uv run pytest -m "not integration"   # unit tests only
+uv run pytest -m "not integration"   # unit + contract tests only
+ARBITRON_LIVE_EXCHANGE_TESTS=1 uv run pytest tests/live   # opt-in: real Binance API
 ```
 
 Integration tests start a throwaway PostgreSQL container through

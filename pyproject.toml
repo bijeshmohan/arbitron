@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 authors = [{ name = "Bijesh Mohan" }]
 dependencies = [
     "alembic>=1.20,<2",
+    "ccxt>=4.5.85,<5",
     "psycopg[binary]>=3.3,<4",
     "pydantic>=2.14,<3",
     "pydantic-settings>=2.15,<3",
@@ -41,10 +42,12 @@ select = [
 ]
 ignore = [
     "PLR2004", # magic values are fine in tests and explicit config bounds
+    "PLR0913", # keyword-only constructor/config arguments are explicit, not a smell
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "PLR0913"]
+"tests/**" = ["S101", "S311", "PLR0917"]  # asserts; seeded RNGs; pytest params are positional
+"typings/**" = ["N"]  # third-party names as published
 "src/arbitron/persistence/migrations/versions/**" = ["E501"]  # generated DDL strings
 "src/arbitron/ports/errors.py" = ["N818"]  # names follow the plan's error taxonomy
 
@@ -59,7 +62,10 @@ testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config", "-ra"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-markers = ["integration: needs PostgreSQL (Docker via testcontainers, or ARBITRON_TEST_DATABASE_URL)"]
+markers = [
+    "integration: needs PostgreSQL (Docker via testcontainers, or ARBITRON_TEST_DATABASE_URL)",
+    "live_exchange: calls a real venue; opt-in via ARBITRON_LIVE_EXCHANGE_TESTS=1",
+]
 filterwarnings = ["error"]
 
 [tool.coverage.run]

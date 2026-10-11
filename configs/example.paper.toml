@@ -37,6 +37,16 @@ allow_market_orders = false
 submission_timeout_seconds = 15
 reconciliation_interval_seconds = 60
 
+# Optional; these are the defaults.
+[market]
+close_grace_seconds = 5
+backfill_candles = 1000
+max_pages_per_sync = 20
+metadata_max_age_seconds = 3600
+max_clock_skew_ms = 1000
+request_concurrency = 2
+read_retry_attempts = 3
+
 [live]
 enabled = false
 acknowledgement = false

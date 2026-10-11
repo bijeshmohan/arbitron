@@ -149,6 +149,22 @@ class ExecutionSection(_Section):
     reconciliation_interval_seconds: int = Field(gt=0)
 
 
+class MarketSection(_Section):
+    """Market-data ingestion settings. Operational, not financial, so defaults are allowed."""
+
+    # A candle counts as closed only this long after its close time, so the
+    # venue has finished aggregating it.
+    close_grace_seconds: int = Field(default=5, ge=0, le=60)
+    # History fetched on first sync of a symbol.
+    backfill_candles: int = Field(default=1000, ge=1, le=100_000)
+    # Pages per sync before reporting an incomplete backfill.
+    max_pages_per_sync: int = Field(default=20, ge=1, le=1000)
+    metadata_max_age_seconds: int = Field(default=3600, ge=60)
+    max_clock_skew_ms: int = Field(default=1000, ge=50, le=60_000)
+    request_concurrency: int = Field(default=2, ge=1, le=10)
+    read_retry_attempts: int = Field(default=3, ge=1, le=10)
+
+
 class LiveSection(_Section):
     enabled: bool = False
     acknowledgement: bool = False
@@ -160,6 +176,7 @@ class ArbitronConfig(_Section):
     strategy: StrategySection
     risk: RiskSection
     execution: ExecutionSection
+    market: MarketSection = MarketSection()
     live: LiveSection = LiveSection()
 
     @model_validator(mode="after")

@@ -263,15 +263,16 @@ arbitron/
 │       │   ├── clock.py
 │       │   └── notifier.py
 │       ├── exchange/
-│       │   ├── ccxt_adapter.py
-│       │   ├── capabilities.py
-│       │   ├── mapping.py
-│       │   └── errors.py
+│       │   ├── ccxt_adapter.py     # MarketDataPort over ccxt.async_support
+│       │   ├── capabilities.py     # `has` flags, supported venues
+│       │   ├── mapping.py          # CCXT payload -> domain (exact Decimals)
+│       │   ├── retry.py            # bounded backoff for safe reads only
+│       │   └── errors.py           # CCXT -> venue error taxonomy
 │       ├── market/
-│       │   ├── collector.py
-│       │   ├── normalizer.py
-│       │   ├── candles.py
-│       │   └── freshness.py
+│       │   ├── collector.py        # closed-candle ingestion
+│       │   ├── candles.py          # alignment, series checks, gaps
+│       │   ├── freshness.py        # data-quality gate (§9.2)
+│       │   └── service.py          # sync cycle / follow loop
 │       ├── strategy/
 │       │   ├── base.py
 │       │   ├── registry.py
@@ -323,11 +324,13 @@ arbitron/
 │           ├── metrics.py
 │           ├── health.py
 │           └── alerts.py
+├── typings/ccxt/               # minimal type stubs for the CCXT surface used
 ├── tests/
 │   ├── unit/
 │   ├── integration/
-│   ├── contract/
+│   ├── contract/               # real CCXT parsing over recorded venue responses
 │   ├── failure/
+│   ├── live/                   # opt-in calls to the real venue (never in CI)
 │   └── fixtures/
 ├── scripts/
 │   ├── seed_paper_account.py
@@ -634,7 +637,9 @@ Map errors into at least:
 -   `UnknownExchangeError`
 
 Do not retry non-retryable errors. Use bounded exponential backoff with
-jitter for transient reads. For order submissions, **never blindly retry
+jitter for transient reads. CCXT `DuplicateOrderId` maps to
+`UnknownExchangeError`, not `InvalidOrder`: it means an order with that
+client ID may already exist, so the outcome must be reconciled. For order submissions, **never blindly retry
 after timeout**; mark submission outcome unknown and reconcile first.
 
 ### 8.2 Precision and constraints
@@ -1281,12 +1286,12 @@ tests validate transactions, constraints, and deduplication.
 
 ### Phase 3 --- CCXT read adapter and market data
 
--   [ ] Implement exchange factory and capability discovery.
--   [ ] Add market metadata loading and symbol validation.
--   [ ] Implement OHLCV fetch, normalization, persistence, freshness and
+-   [x] Implement exchange factory and capability discovery.
+-   [x] Add market metadata loading and symbol validation.
+-   [x] Implement OHLCV fetch, normalization, persistence, freshness and
     gap checks.
--   [ ] Add rate limiting, timeout, retry policy for safe reads.
--   [ ] Add mocked adapter contract tests.
+-   [x] Add rate limiting, timeout, retry policy for safe reads.
+-   [x] Add mocked adapter contract tests.
 
 **Acceptance:** paper app can ingest and persist closed candles;
 stale/invalid data prevents strategy evaluation or order creation.
@@ -1444,8 +1449,11 @@ actions and include verification steps.
 
 Do not guess these; use safe defaults and document assumptions:
 
-1.  **Exchange:** choose one venue first; verify CCXT support and
-    regional/account eligibility.
+1.  **Exchange:** **decided: Binance spot** (operator is in India).
+    Public market data via CCXT is verified (Phase 3). Still to verify
+    before live use: account eligibility and KYC for the operator's
+    jurisdiction, API key permissions, and the sandbox option for Phase 11
+    (Binance spot testnet, or CCXT's Binance demo-trading mode).
 2.  **Market:** spot only for MVP; confirm quote currency and symbol
     allowlist.
 3.  **Strategy:** select only for software integration initially; do not
@@ -1466,7 +1474,10 @@ Do not guess these; use safe defaults and document assumptions:
     backup retention, and restore objective.
 11. **Jurisdictional requirements:** verify applicable exchange terms,
     tax/reporting obligations, and local rules with qualified sources
-    before live use.
+    before live use. For India this includes the tax treatment of virtual
+    digital assets and TDS on transfers; confirm with a qualified tax
+    professional, as the bot's accounting must support whatever records
+    are required.
 
 The agent may propose options, but must not silently decide high-impact
 financial or operational policy.
