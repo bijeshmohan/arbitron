@@ -240,17 +240,22 @@ arbitron/
 │       ├── config/
 │       │   ├── settings.py
 │       │   └── validation.py
+│       ├── clocks.py               # SystemClock, ManualClock
 │       ├── domain/
 │       │   ├── enums.py
+│       │   ├── errors.py
+│       │   ├── ids.py              # deterministic IDs, client order IDs
 │       │   ├── money.py
 │       │   ├── market.py
 │       │   ├── signals.py
-│       │   ├── orders.py
+│       │   ├── orders.py           # intents, orders, central state machine
 │       │   ├── fills.py
 │       │   ├── positions.py
 │       │   ├── portfolio.py
+│       │   ├── risk.py             # risk decisions, reason codes, kill switch
 │       │   └── events.py
 │       ├── ports/
+│       │   ├── errors.py           # venue error taxonomy (§8.1)
 │       │   ├── market_data.py
 │       │   ├── execution.py
 │       │   ├── account.py
@@ -282,7 +287,6 @@ arbitron/
 │       │   └── kill_switch.py
 │       ├── execution/
 │       │   ├── order_manager.py
-│       │   ├── state_machine.py
 │       │   ├── submission.py
 │       │   ├── polling.py
 │       │   └── reconciler.py
@@ -467,15 +471,25 @@ Order statuses are normalized to an internal enum. Happy path:
 
 -   `CREATED → RISK_APPROVED | RISK_REJECTED`
 -   `RISK_APPROVED → SUBMITTING`
--   `SUBMITTING → OPEN | PARTIALLY_FILLED | FILLED | EXCHANGE_REJECTED | SUBMISSION_UNKNOWN`
--   `OPEN → PARTIALLY_FILLED | FILLED | CANCEL_REQUESTED | CANCELED | EXPIRED`
+-   `SUBMITTING → OPEN | PARTIALLY_FILLED | FILLED | CANCELED | EXPIRED | PARTIALLY_FILLED_CLOSED | EXCHANGE_REJECTED | SUBMISSION_UNKNOWN`
+    (an immediate-or-cancel order can close in the submit response)
+-   `OPEN → PARTIALLY_FILLED | FILLED | CANCEL_REQUESTED | CANCELED | EXPIRED | PARTIALLY_FILLED_CLOSED`
+    (polling may skip the intermediate partially-filled observation)
 -   `PARTIALLY_FILLED → PARTIALLY_FILLED | FILLED | CANCEL_REQUESTED | PARTIALLY_FILLED_CLOSED`
--   `CANCEL_REQUESTED → PARTIALLY_FILLED | FILLED | CANCELED | PARTIALLY_FILLED_CLOSED`
+-   `CANCEL_REQUESTED → CANCEL_REQUESTED | OPEN | PARTIALLY_FILLED | FILLED | CANCELED | EXPIRED | PARTIALLY_FILLED_CLOSED`
+    (self-transition records fills that race the cancel; `OPEN`/`PARTIALLY_FILLED`
+    when the venue refuses the cancel and the order is still live)
 -   `SUBMISSION_UNKNOWN → OPEN | PARTIALLY_FILLED | FILLED | CANCELED | EXPIRED | PARTIALLY_FILLED_CLOSED | EXCHANGE_REJECTED | NOT_PLACED | RECONCILIATION_REQUIRED`
--   Any non-terminal state → `RECONCILIATION_REQUIRED`
--   `RECONCILIATION_REQUIRED →` any state consistent with verified
-    exchange facts (recorded with provenance), never back to
-    `SUBMITTING`.
+-   Any other non-terminal state → `RECONCILIATION_REQUIRED`
+-   `RECONCILIATION_REQUIRED → OPEN | PARTIALLY_FILLED | FILLED | CANCELED | EXPIRED | PARTIALLY_FILLED_CLOSED | EXCHANGE_REJECTED | NOT_PLACED`,
+    only as established by verified exchange facts (recorded with
+    provenance); never back to a pre-submission state or `SUBMITTING`.
+
+Filled quantity never decreases across a transition. Status/fill
+invariants: pre-submission states, `OPEN`, `CANCELED`, `EXPIRED`,
+`EXCHANGE_REJECTED`, and `NOT_PLACED` have zero filled quantity;
+`PARTIALLY_FILLED` and `PARTIALLY_FILLED_CLOSED` have
+`0 < filled < amount`; `FILLED` has `filled == amount`.
 
 Terminal states are final; a fill observed for an order in a terminal
 state is a reconciliation discrepancy, not a silent update. A
@@ -1215,13 +1229,13 @@ change.
 
 ### Phase 0 --- Repository bootstrap
 
--   [ ] Initialize `uv` project, `src/` layout, package metadata,
+-   [x] Initialize `uv` project, `src/` layout, package metadata,
     lockfile.
--   [ ] Add lint, formatting, type-check, and pytest configuration.
--   [ ] Add `.gitignore`, `.env.example`, README, and this plan.
--   [ ] Add CI workflow for static checks and tests.
--   [ ] Add CLI skeleton and validated settings model.
--   [ ] Configure `pytest-asyncio` and an async CLI entry point
+-   [x] Add lint, formatting, type-check, and pytest configuration.
+-   [x] Add `.gitignore`, `.env.example`, README, and this plan.
+-   [x] Add CI workflow for static checks and tests.
+-   [x] Add CLI skeleton and validated settings model.
+-   [x] Configure `pytest-asyncio` and an async CLI entry point
     (`asyncio.run`) so async is the default from the first commit.
 
 **Acceptance:** fresh clone can install, run CLI help, lint, type-check,
@@ -1229,13 +1243,13 @@ and pass an initial test.
 
 ### Phase 1 --- Domain and ports
 
--   [ ] Implement core enums/value objects/entities.
--   [ ] Implement `MarketDataPort`, `ExecutionPort`, `AccountPort`,
+-   [x] Implement core enums/value objects/entities.
+-   [x] Implement `MarketDataPort`, `ExecutionPort`, `AccountPort`,
     repository, clock, and notifier protocols (async methods for I/O).
--   [ ] Define the order state machine exactly as specified in §6.2,
+-   [x] Define the order state machine exactly as specified in §6.2,
     with exhaustive allowed/forbidden transition tests.
--   [ ] Define kill-switch states (`ARMED`/`TRIPPED`/`RECOVERY_REVIEW`).
--   [ ] Use Decimal and UTC-aware datetimes consistently.
+-   [x] Define kill-switch states (`ARMED`/`TRIPPED`/`RECOVERY_REVIEW`).
+-   [x] Use Decimal and UTC-aware datetimes consistently.
 
 **Acceptance:** domain package imports without CCXT, SQLModel, or
 FastAPI; all invariants have unit tests.

@@ -41,6 +41,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR0913"]
+"src/arbitron/ports/errors.py" = ["N818"]  # names follow the plan's error taxonomy
 
 [tool.pyright]
 include = ["src", "tests"]
