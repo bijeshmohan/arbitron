@@ -8,7 +8,9 @@ import argparse
 import asyncio
 import sys
 import tomllib
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,7 +20,17 @@ from arbitron import __version__
 from arbitron.config import ArbitronConfig, Secrets, load_config
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncEngine
+
+    from arbitron.domain.signals import Signal
+    from arbitron.exchange.ccxt_adapter import CcxtMarketData
+    from arbitron.market.service import CycleOutcome
+    from arbitron.ports.clock import Clock
+    from arbitron.ports.errors import VenueError
+    from arbitron.ports.repositories import UnitOfWork
+    from arbitron.strategy.base import Strategy
 
 EXIT_OK = 0
 EXIT_INVALID_CONFIG = 1
@@ -56,6 +68,12 @@ async def _check_config(args: argparse.Namespace) -> int:
     if config is None:
         return EXIT_INVALID_CONFIG
 
+    try:
+        strategy = _require_strategy(config)
+    except _CommandExit as exc:
+        return exc.code
+    from arbitron.strategy.evaluation import config_of  # noqa: PLC0415
+
     secrets = Secrets()
     print(f"config OK: {path}")
     print(f"  mode:        {config.app.mode}")
@@ -63,8 +81,10 @@ async def _check_config(args: argparse.Namespace) -> int:
     print(f"  symbols:     {', '.join(config.exchange.symbols)}")
     print(
         f"  strategy:    {config.strategy.id} v{config.strategy.version} "
-        f"[{config.strategy.timeframe}]"
+        f"[{config.strategy.timeframe}] lookback={strategy.lookback} "
+        f"enabled={config.strategy.enabled}"
     )
+    print(f"  strategy config hash: {config_of(strategy).config_hash}")
     print(f"  credentials: {'present' if secrets.has_exchange_credentials else 'absent'}")
     print(f"  config hash: {config.config_hash()}")
     return EXIT_OK
@@ -139,73 +159,251 @@ async def _schema_failure(engine: "AsyncEngine") -> int | None:
     return None
 
 
-async def _market_sync(args: argparse.Namespace) -> int:
-    import signal  # noqa: PLC0415
+class _CommandExit(Exception):  # noqa: N818 - control flow, not an error type
+    """Stop a command with an exit code (the message has already been printed)."""
 
+    def __init__(self, code: int) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _require_config(path: Path) -> ArbitronConfig:
+    config = _load_config(path)
+    if config is None:
+        raise _CommandExit(EXIT_INVALID_CONFIG)
+    return config
+
+
+def _require_strategy(config: ArbitronConfig) -> "Strategy":
+    from arbitron.config.settings import Mode  # noqa: PLC0415
+    from arbitron.strategy.registry import (  # noqa: PLC0415
+        StrategyConfigError,
+        UnknownStrategyError,
+        build_strategy,
+    )
+
+    try:
+        return build_strategy(
+            config.strategy.id,
+            config.strategy.version,
+            config.strategy.parameters,
+            live=config.app.mode is Mode.LIVE,
+        )
+    except (UnknownStrategyError, StrategyConfigError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise _CommandExit(EXIT_INVALID_CONFIG) from exc
+
+
+@dataclass
+class _Runtime:
+    clock: "Clock"
+    uow_factory: "Callable[[], UnitOfWork]"
+    market_data: "CcxtMarketData | None"
+
+
+@asynccontextmanager
+async def _runtime(config: ArbitronConfig, *, venue: bool) -> AsyncGenerator[_Runtime]:
+    """Database (schema verified) and, if ``venue``, the market-data adapter; cleaned up after."""
     from arbitron.clocks import SystemClock  # noqa: PLC0415
     from arbitron.exchange.ccxt_adapter import create_market_data  # noqa: PLC0415
-    from arbitron.market.service import CycleOutcome, MarketDataService  # noqa: PLC0415
     from arbitron.persistence.db import create_engine, create_session_factory  # noqa: PLC0415
     from arbitron.persistence.unit_of_work import SqlUnitOfWork  # noqa: PLC0415
-    from arbitron.ports.errors import VenueError  # noqa: PLC0415
 
-    config = _load_config(args.config)
-    if config is None:
-        return EXIT_INVALID_CONFIG
     url = _database_url()
     if url is None:
-        return EXIT_DATABASE_ERROR
-
+        raise _CommandExit(EXIT_DATABASE_ERROR)
     engine = create_engine(url)
     try:
         if (failure := await _schema_failure(engine)) is not None:
-            return failure
-
+            raise _CommandExit(failure)
         clock = SystemClock()
         factory = create_session_factory(engine)
-        market_data = create_market_data(config, clock)
+        market_data = create_market_data(config, clock) if venue else None
+        try:
+            yield _Runtime(clock, lambda: SqlUnitOfWork(factory), market_data)
+        finally:
+            if market_data is not None:
+                await market_data.close()
+    finally:
+        await engine.dispose()
+
+
+# Runs cycles until the event is set: (on_cycle, on_error, stop) -> None.
+type _Follow[T] = Callable[
+    [Callable[[T], None], Callable[[VenueError], None], asyncio.Event], Awaitable[None]
+]
+
+
+async def _run_cycles[T](
+    *,
+    follow: bool,
+    once: "Callable[[], Awaitable[T]]",
+    forever: "_Follow[T]",
+    report: "Callable[[T], None]",
+    ok: "Callable[[T], bool]",
+) -> int:
+    """One cycle (exit code reflects the outcome) or follow until SIGINT/SIGTERM."""
+    import signal  # noqa: PLC0415
+
+    from arbitron.ports.errors import VenueError  # noqa: PLC0415
+
+    def report_error(exc: VenueError) -> None:
+        print(f"error: venue request failed: {exc}", file=sys.stderr)
+
+    try:
+        if not follow:
+            outcome = await once()
+            report(outcome)
+            return EXIT_OK if ok(outcome) else EXIT_DATA_QUALITY
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+        await forever(report, report_error, stop)
+        return EXIT_OK
+    except VenueError as exc:
+        report_error(exc)
+        return EXIT_VENUE_ERROR
+
+
+def _print_market(outcome: "CycleOutcome", timeframe: str) -> None:
+    for result, quality in zip(outcome.results, outcome.reports, strict=True):
+        latest = result.latest_closed.isoformat() if result.latest_closed else "-"
+        status = "OK" if quality.ok else "BLOCKED"
+        print(
+            f"{result.symbol} [{timeframe}] fetched={result.fetched} "
+            f"written={result.written} latest_closed={latest} quality={status}"
+        )
+        for issue in (*result.issues, *quality.issues):
+            marker = "!" if issue.blocking else "~"
+            print(f"  {marker} {issue.code.value}: {issue.detail}")
+
+
+def _print_signal(signal: "Signal") -> None:
+    print(
+        f"  signal {signal.side.value.upper()} {signal.symbol} "
+        f"candle={signal.source_candle_time.isoformat()} reason={signal.reason_code}"
+    )
+
+
+async def _market_sync(args: argparse.Namespace) -> int:
+    from arbitron.market.service import CycleOutcome, MarketDataService  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    async with _runtime(config, venue=True) as rt:
+        assert rt.market_data is not None  # noqa: S101 - venue=True
         service = MarketDataService(
             config,
-            market_data=market_data,
-            uow_factory=lambda: SqlUnitOfWork(factory),
-            clock=clock,
+            market_data=rt.market_data,
+            uow_factory=rt.uow_factory,
+            clock=rt.clock,
             lookback=args.lookback,
         )
 
         def report(outcome: CycleOutcome) -> None:
-            for result, quality in zip(outcome.results, outcome.reports, strict=True):
-                latest = result.latest_closed.isoformat() if result.latest_closed else "-"
-                status = "OK" if quality.ok else "BLOCKED"
-                print(
-                    f"{result.symbol} [{service.timeframe}] fetched={result.fetched} "
-                    f"written={result.written} latest_closed={latest} quality={status}"
-                )
-                for issue in (*result.issues, *quality.issues):
-                    marker = "!" if issue.blocking else "~"
-                    print(f"  {marker} {issue.code.value}: {issue.detail}")
+            _print_market(outcome, config.strategy.timeframe)
             sys.stdout.flush()
 
-        def report_error(exc: VenueError) -> None:
-            print(f"error: venue request failed: {exc}", file=sys.stderr)
+        return await _run_cycles(
+            follow=args.follow,
+            once=service.run_cycle,
+            forever=lambda on_cycle, on_error, stop: service.follow(on_cycle, on_error, stop=stop),
+            report=report,
+            ok=lambda outcome: outcome.ok,
+        )
 
-        try:
-            if not args.follow:
-                outcome = await service.run_cycle()
-                report(outcome)
-                return EXIT_OK if outcome.ok else EXIT_DATA_QUALITY
-            stop = asyncio.Event()
-            loop = asyncio.get_running_loop()
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, stop.set)
-            await service.follow(report, report_error, stop=stop)
+
+async def _strategy_run(args: argparse.Namespace) -> int:
+    from arbitron.application.pipeline import PipelineOutcome, SignalPipeline  # noqa: PLC0415
+    from arbitron.application.strategy_runner import StrategyRunner  # noqa: PLC0415
+    from arbitron.domain.market import Timeframe  # noqa: PLC0415
+    from arbitron.market.service import MarketDataService  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    strategy = _require_strategy(config)
+    async with _runtime(config, venue=True) as rt:
+        assert rt.market_data is not None  # noqa: S101 - venue=True
+        market = MarketDataService(
+            config,
+            market_data=rt.market_data,
+            uow_factory=rt.uow_factory,
+            clock=rt.clock,
+            lookback=strategy.lookback,
+        )
+        runner = StrategyRunner(
+            strategy,
+            exchange_id=config.exchange.id,
+            timeframe=Timeframe(config.strategy.timeframe),
+            uow_factory=rt.uow_factory,
+            clock=rt.clock,
+        )
+        pipeline = SignalPipeline(market, runner, strategy_enabled=config.strategy.enabled)
+
+        def report(outcome: PipelineOutcome) -> None:
+            _print_market(outcome.market, config.strategy.timeframe)
+            if not config.strategy.enabled:
+                print("  strategy disabled in config: not evaluated")
+            for run in outcome.runs:
+                print(
+                    f"  {strategy.strategy_id} v{strategy.version} evaluated="
+                    f"{len(run.evaluated)} new_signals={len(run.signals)}"
+                )
+                for signal in run.signals:
+                    _print_signal(signal)
+                for reason in run.skipped:
+                    print(f"  ~ skipped: {reason}")
+            sys.stdout.flush()
+
+        return await _run_cycles(
+            follow=args.follow,
+            once=pipeline.run_cycle,
+            forever=lambda on_cycle, on_error, stop: pipeline.follow(on_cycle, on_error, stop=stop),
+            report=report,
+            ok=lambda outcome: outcome.market.ok,
+        )
+
+
+async def _strategy_replay(args: argparse.Namespace) -> int:
+    from arbitron.domain.market import Timeframe  # noqa: PLC0415
+    from arbitron.domain.portfolio import PortfolioView  # noqa: PLC0415
+    from arbitron.strategy.evaluation import config_of, replay  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    strategy = _require_strategy(config)
+    timeframe = Timeframe(config.strategy.timeframe)
+    symbol: str = args.symbol or config.exchange.symbols[0]
+    if symbol not in config.exchange.symbols:
+        print(f"error: {symbol} is not in the configured symbols", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    async with _runtime(config, venue=False) as rt, rt.uow_factory() as tx:
+        latest = await tx.candles.latest_closed(config.exchange.id, symbol, timeframe)
+        if latest is None:
+            print(f"no stored candles for {symbol} [{timeframe}]")
             return EXIT_OK
-        except VenueError as exc:
-            report_error(exc)
-            return EXIT_VENUE_ERROR
-        finally:
-            await market_data.close()
-    finally:
-        await engine.dispose()
+        end = args.end or latest.close_time
+        start = args.start or end - 1000 * timeframe.duration
+        # Warm-up: include the lookback before ``start`` so its first candle can be evaluated.
+        candles = await tx.candles.closed_range(
+            config.exchange.id,
+            symbol,
+            timeframe,
+            start=start - (strategy.lookback - 1) * timeframe.duration,
+            end=end,
+        )
+        print(
+            f"replay {strategy.strategy_id} v{strategy.version} "
+            f"config={config_of(strategy).config_hash[:12]} {symbol} [{timeframe}] "
+            f"{start.isoformat()} .. {end.isoformat()} ({len(candles)} candles incl. warm-up)"
+        )
+        count = 0
+        for signal in replay(
+            strategy, candles, timeframe=timeframe, portfolio=PortfolioView(as_of=rt.clock.now())
+        ):
+            if signal.source_candle_time >= start:
+                _print_signal(signal)
+                count += 1
+        print(f"{count} signal(s); nothing was written")
+    return EXIT_OK
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -246,10 +444,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync.set_defaults(handler=_market_sync)
 
+    strategy = subcommands.add_parser("strategy", help="strategy evaluation")
+    strategy_commands = strategy.add_subparsers(
+        dest="strategy_command", required=True, metavar="STRATEGY_COMMAND"
+    )
+    run = strategy_commands.add_parser(
+        "run", help="sync market data, then evaluate the strategy on new closed candles"
+    )
+    run.add_argument("config", type=Path, help="path to a TOML config file")
+    run.add_argument("--follow", action="store_true", help="repeat after every candle close")
+    run.set_defaults(handler=_strategy_run)
+    replay_cmd = strategy_commands.add_parser(
+        "replay", help="print the signals the strategy produces over stored candles (no writes)"
+    )
+    replay_cmd.add_argument("config", type=Path, help="path to a TOML config file")
+    replay_cmd.add_argument("--symbol", help="defaults to the first configured symbol")
+    replay_cmd.add_argument(
+        "--start", type=_utc_timestamp, help="ISO-8601 UTC start (default: 1000 candles back)"
+    )
+    replay_cmd.add_argument(
+        "--end", type=_utc_timestamp, help="ISO-8601 UTC end, exclusive (default: latest)"
+    )
+    replay_cmd.set_defaults(handler=_strategy_replay)
+
     return parser
+
+
+def _utc_timestamp(value: str) -> "datetime":
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        msg = f"invalid ISO-8601 timestamp: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handler: Command = args.handler
-    return asyncio.run(handler(args))
+
+    async def run() -> int:
+        try:
+            return await handler(args)
+        except _CommandExit as exc:
+            return exc.code
+
+    return asyncio.run(run())

@@ -17,6 +17,7 @@ from arbitron.domain.market import Candle, Timeframe
 from arbitron.domain.orders import Order, OrderIntent
 from arbitron.domain.risk import KillSwitch, RiskDecision, RiskReason
 from arbitron.domain.signals import Signal
+from arbitron.domain.strategies import StrategyConfig, StrategyCursor
 from arbitron.persistence.tables import (
     CandleRow,
     FillRow,
@@ -25,6 +26,8 @@ from arbitron.persistence.tables import (
     OrderRow,
     RiskDecisionRow,
     SignalRow,
+    StrategyConfigRow,
+    StrategyCursorRow,
     SystemEventRow,
 )
 
@@ -67,6 +70,7 @@ def signal_values(signal: Signal) -> dict[str, Any]:
         "dedupe_key": signal.dedupe_key,
         "strategy_id": signal.strategy_id,
         "strategy_version": signal.strategy_version,
+        "config_hash": signal.config_hash,
         "exchange_id": signal.exchange_id,
         "symbol": signal.symbol,
         "timeframe": signal.timeframe.value,
@@ -83,6 +87,7 @@ def signal_from_row(row: SignalRow) -> Signal:
     signal = Signal(
         strategy_id=row.strategy_id,
         strategy_version=row.strategy_version,
+        config_hash=row.config_hash,
         exchange_id=row.exchange_id,
         symbol=row.symbol,
         timeframe=Timeframe(row.timeframe),
@@ -95,6 +100,23 @@ def signal_from_row(row: SignalRow) -> Signal:
     )
     _require_same("signal id", row.id, signal.id)
     return signal
+
+
+def strategy_config_from_row(row: StrategyConfigRow) -> StrategyConfig:
+    config = StrategyConfig(row.strategy_id, row.version, row.parameters)
+    _require_same("strategy config hash", row.config_hash, config.config_hash)
+    return config
+
+
+def strategy_cursor_from_row(row: StrategyCursorRow) -> StrategyCursor:
+    return StrategyCursor(
+        config_hash=row.config_hash,
+        exchange_id=row.exchange_id,
+        symbol=row.symbol,
+        timeframe=Timeframe(row.timeframe),
+        last_open_time=row.last_open_time,
+        updated_at=row.updated_at,
+    )
 
 
 def order_values(order: Order) -> dict[str, Any]:

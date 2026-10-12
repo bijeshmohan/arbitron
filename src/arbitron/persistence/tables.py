@@ -5,7 +5,7 @@ objects. Enumerations are stored as text guarded by CHECK constraints (easier
 to evolve than PostgreSQL enum types). Financial values use NUMERIC(38, 18).
 
 Tables for later phases (markets, balances, positions, snapshots, bot
-instances, strategy configs/runs, heartbeats, risk events) are added by the
+instances, strategy runs, heartbeats, risk events) are added by the
 migrations of the phase that first uses them.
 """
 
@@ -85,7 +85,36 @@ class CandleRow(Base):
     ingested_at: Mapped[datetime] = mapped_column(Timestamp)
 
 
+class StrategyConfigRow(Base):
+    """Immutable strategy config snapshots (UPDATE/DELETE blocked by trigger)."""
+
+    __tablename__ = "strategy_configs"
+
+    config_hash: Mapped[str] = mapped_column(Text, primary_key=True)
+    strategy_id: Mapped[str] = mapped_column(Text)
+    version: Mapped[str] = mapped_column(Text)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(Timestamp)
+
+
+class StrategyCursorRow(Base):
+    """Last finalized candle each strategy config has evaluated, per market."""
+
+    __tablename__ = "strategy_cursors"
+
+    config_hash: Mapped[str] = mapped_column(
+        Text, ForeignKey("strategy_configs.config_hash"), primary_key=True
+    )
+    exchange_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    timeframe: Mapped[str] = mapped_column(Text, primary_key=True)
+    last_open_time: Mapped[datetime] = mapped_column(Timestamp)
+    updated_at: Mapped[datetime] = mapped_column(Timestamp)
+
+
 class SignalRow(Base):
+    """Append-only (UPDATE/DELETE blocked by trigger)."""
+
     __tablename__ = "signals"
     __table_args__ = (CheckConstraint(_in("side", Side), name="side"),)
 
@@ -93,6 +122,7 @@ class SignalRow(Base):
     dedupe_key: Mapped[str] = mapped_column(Text, unique=True)
     strategy_id: Mapped[str] = mapped_column(Text)
     strategy_version: Mapped[str] = mapped_column(Text)
+    config_hash: Mapped[str] = mapped_column(Text, ForeignKey("strategy_configs.config_hash"))
     exchange_id: Mapped[str] = mapped_column(Text)
     symbol: Mapped[str] = mapped_column(Text)
     timeframe: Mapped[str] = mapped_column(Text)
@@ -274,6 +304,8 @@ class SystemEventRow(Base):
 
 
 APPEND_ONLY_TABLES = (
+    StrategyConfigRow.__tablename__,
+    SignalRow.__tablename__,
     OrderEventRow.__tablename__,
     FillRow.__tablename__,
     RiskDecisionRow.__tablename__,

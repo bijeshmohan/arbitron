@@ -7,7 +7,7 @@ import pytest
 from arbitron.domain.enums import MarketType, Side
 from arbitron.domain.errors import DomainValidationError
 from arbitron.domain.market import Market, Ticker, Timeframe
-from tests.factories import T0, at, make_candle, make_signal
+from tests.factories import SMA_CONFIG, T0, at, make_candle, make_signal
 
 
 class TestTimeframe:
@@ -111,8 +111,8 @@ class TestTicker:
 class TestSignal:
     def test_id_is_deterministic_from_dedupe_key(self) -> None:
         assert make_signal().id == make_signal().id
-        assert (
-            make_signal().dedupe_key == "sma_cross:1:binance:BTC/USDT:5m:2026-01-01T12:00:00+00:00"
+        assert make_signal().dedupe_key == (
+            f"sma_cross:1:{SMA_CONFIG.config_hash}:binance:BTC/USDT:5m:2026-01-01T12:00:00+00:00"
         )
 
     def test_side_and_rationale_do_not_change_identity(self) -> None:
@@ -125,6 +125,7 @@ class TestSignal:
         "overrides",
         [
             {"strategy_version": "2"},
+            {"config_hash": "f" * 64},
             {"symbol": "ETH/USDT"},
             {"timeframe": Timeframe("1h")},
             {"source_candle_time": at(5)},

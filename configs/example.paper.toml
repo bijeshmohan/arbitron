@@ -23,6 +23,11 @@ version = "1"
 timeframe = "5m"
 enabled = true
 
+# sma_cross is a software integration fixture, not a trading recommendation.
+[strategy.parameters]
+fast = 10
+slow = 30
+
 [risk]
 max_order_notional = "50"
 max_asset_exposure = "100"

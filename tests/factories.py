@@ -10,9 +10,11 @@ from arbitron.domain.fills import ExchangeTrade, Fee
 from arbitron.domain.market import Candle, Timeframe
 from arbitron.domain.orders import Order, OrderIntent
 from arbitron.domain.signals import Signal
+from arbitron.domain.strategies import StrategyConfig
 
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 FIVE_MIN = Timeframe("5m")
+SMA_CONFIG = StrategyConfig("sma_cross", "1", {"fast": 10, "slow": 30})
 
 
 def at(minutes: int) -> datetime:
@@ -23,6 +25,7 @@ def make_signal(**overrides: Any) -> Signal:
     fields: dict[str, Any] = {
         "strategy_id": "sma_cross",
         "strategy_version": "1",
+        "config_hash": SMA_CONFIG.config_hash,
         "exchange_id": "binance",
         "symbol": "BTC/USDT",
         "timeframe": FIVE_MIN,

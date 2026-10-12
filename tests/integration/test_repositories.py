@@ -13,7 +13,16 @@ from arbitron.domain.fills import Fee, Fill
 from arbitron.domain.orders import Order
 from arbitron.domain.risk import KillSwitch, RiskDecision, RiskReason
 from arbitron.ports.repositories import ConcurrencyConflict, ConflictingRecordError
-from tests.factories import FIVE_MIN, T0, at, make_candle, make_intent, make_signal, make_trade
+from tests.factories import (
+    FIVE_MIN,
+    SMA_CONFIG,
+    T0,
+    at,
+    make_candle,
+    make_intent,
+    make_signal,
+    make_trade,
+)
 from tests.integration.conftest import UowFactory
 
 S = OrderStatus
@@ -30,6 +39,7 @@ def event_for(previous: Order, updated: Order) -> OrderEvent:
 async def persist_new_order(uow: UowFactory) -> Order:
     order = Order.new(make_intent())
     async with uow() as tx:
+        await tx.strategy_configs.add_if_absent(SMA_CONFIG, created_at=T0)
         assert await tx.signals.add_if_absent(make_signal())
         assert await tx.orders.add_if_absent(order, created_event(order))
         await tx.commit()
@@ -105,6 +115,18 @@ class TestCandles:
 
 
 class TestSignals:
+    @pytest.fixture(autouse=True)
+    async def config_snapshot(self, uow: UowFactory) -> None:
+        async with uow() as tx:
+            await tx.strategy_configs.add_if_absent(SMA_CONFIG, created_at=T0)
+            await tx.commit()
+
+    async def test_signal_requires_config_snapshot(self, uow: UowFactory) -> None:
+        orphan = make_signal(config_hash="0" * 64)
+        async with uow() as tx:
+            with pytest.raises(IntegrityError, match="fk_signals_config_hash_strategy_configs"):
+                await tx.signals.add_if_absent(orphan)
+
     async def test_duplicate_signal_is_ignored(self, uow: UowFactory) -> None:
         async with uow() as tx:
             assert await tx.signals.add_if_absent(make_signal())
@@ -226,6 +248,7 @@ class TestOrders:
     async def test_uncommitted_work_is_rolled_back(self, uow: UowFactory) -> None:
         order = Order.new(make_intent())
         async with uow() as tx:
+            await tx.strategy_configs.add_if_absent(SMA_CONFIG, created_at=T0)
             await tx.signals.add_if_absent(make_signal())
             await tx.orders.add_if_absent(order, created_event(order))
         async with uow() as tx:
@@ -350,7 +373,15 @@ class TestDatabaseGuards:
                 await conn.execute(text(statement))
 
     @pytest.mark.parametrize(
-        "table", ["fills", "risk_decisions", "kill_switch_events", "system_events"]
+        "table",
+        [
+            "fills",
+            "risk_decisions",
+            "kill_switch_events",
+            "system_events",
+            "signals",
+            "strategy_configs",
+        ],
     )
     async def test_every_audit_table_has_the_trigger(self, engine: AsyncEngine, table: str) -> None:
         async with engine.connect() as conn:

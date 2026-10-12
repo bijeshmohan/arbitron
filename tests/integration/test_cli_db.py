@@ -53,3 +53,33 @@ def test_market_sync_end_to_end(
     captured = capsys.readouterr()
     assert code == exit_code, captured
     assert expected in captured.out + captured.err
+
+
+def test_strategy_run_and_replay_end_to_end(
+    database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from arbitron.clocks import ManualClock  # noqa: PLC0415
+    from arbitron.exchange import ccxt_adapter  # noqa: PLC0415
+    from tests.integration.test_market_ingestion import NOW, FakeVenue, history  # noqa: PLC0415
+    from tests.unit.test_cli import EXAMPLE_PAPER  # noqa: PLC0415
+
+    clock = ManualClock(NOW)
+    venue = FakeVenue(clock, history(200))
+
+    def fake_factory(_config: object, _clock: object) -> FakeVenue:
+        return venue
+
+    monkeypatch.setattr(ccxt_adapter, "create_market_data", fake_factory)
+    monkeypatch.setattr("arbitron.clocks.SystemClock", lambda: clock)
+    monkeypatch.setenv("ARBITRON_DATABASE_URL", database_url)
+
+    # The example backfills 1000 candles; the fake venue has 100 closed, enough for lookback 31.
+    assert main(["strategy", "run", str(EXAMPLE_PAPER)]) == EXIT_OK
+    run_out = capsys.readouterr().out
+    assert "quality=OK" in run_out
+    assert "sma_cross v1 evaluated=1" in run_out
+
+    assert main(["strategy", "replay", str(EXAMPLE_PAPER)]) == EXIT_OK
+    replay_out = capsys.readouterr().out
+    assert "replay sma_cross v1" in replay_out
+    assert "nothing was written" in replay_out

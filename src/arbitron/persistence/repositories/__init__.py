@@ -3,6 +3,10 @@
 from arbitron.persistence.repositories.events import SqlSystemEventRepository
 from arbitron.persistence.repositories.market import SqlCandleRepository
 from arbitron.persistence.repositories.safety import SqlKillSwitchRepository
+from arbitron.persistence.repositories.strategy import (
+    SqlStrategyConfigRepository,
+    SqlStrategyCursorRepository,
+)
 from arbitron.persistence.repositories.trading import (
     SqlFillRepository,
     SqlOrderRepository,
@@ -17,5 +21,7 @@ __all__ = [
     "SqlOrderRepository",
     "SqlRiskDecisionRepository",
     "SqlSignalRepository",
+    "SqlStrategyConfigRepository",
+    "SqlStrategyCursorRepository",
     "SqlSystemEventRepository",
 ]

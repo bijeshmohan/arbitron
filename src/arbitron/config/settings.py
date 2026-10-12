@@ -13,10 +13,11 @@ import hashlib
 import json
 import re
 import tomllib
+from collections.abc import Mapping
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -108,11 +109,32 @@ class ExchangeSection(_Section):
         return value
 
 
+def _check_no_float_parameters(value: object) -> None:
+    if not isinstance(value, Mapping):
+        return  # pydantic reports the wrong type
+    for key, item in cast("Mapping[str, object]", value).items():
+        if isinstance(item, float):
+            msg = f"parameter {key!r}: floats are not allowed; use an integer or a string"
+            raise ValueError(msg)
+
+
+def _reject_float_parameters(value: object) -> object:
+    _check_no_float_parameters(value)
+    return value
+
+
+StrategyParameters = Annotated[
+    dict[str, bool | int | str], BeforeValidator(_reject_float_parameters)
+]
+
+
 class StrategySection(_Section):
     id: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
     version: str = Field(min_length=1)
     timeframe: str
     enabled: bool
+    # Validated against the strategy implementation when it is built.
+    parameters: StrategyParameters = Field(default_factory=dict)
 
     @field_validator("timeframe")
     @classmethod

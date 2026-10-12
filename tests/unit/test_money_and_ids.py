@@ -9,7 +9,12 @@ from arbitron.domain.ids import (
     deterministic_id,
     is_canonical_client_order_id,
 )
-from arbitron.domain.money import is_multiple_of_step, round_down_to_step, to_decimal
+from arbitron.domain.money import (
+    canonical_str,
+    is_multiple_of_step,
+    round_down_to_step,
+    to_decimal,
+)
 
 
 class TestToDecimal:
@@ -90,3 +95,25 @@ class TestIds:
     @pytest.mark.parametrize("value", ["", "arb", "ARB" + "0" * 29, "arb" + "g" * 29, "x" * 32])
     def test_non_canonical_client_ids(self, value: str) -> None:
         assert not is_canonical_client_order_id(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("12.500000000000000000", "12.5"),
+        ("12.5", "12.5"),
+        ("100", "100"),
+        ("1E+2", "100"),
+        ("0.000000000000000001", "0.000000000000000001"),
+        ("0.000", "0"),
+        ("-0", "0"),
+        ("-1.50", "-1.5"),
+        # More digits than Python's default 28-digit context: must not be rounded.
+        (
+            "11.666666666666666666666666666666666666666666666666666666667",
+            "11.666666666666666666666666666666666666666666666666666666667",
+        ),
+    ],
+)
+def test_canonical_str(value: str, expected: str) -> None:
+    assert canonical_str(Decimal(value)) == expected

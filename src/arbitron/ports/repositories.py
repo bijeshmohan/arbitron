@@ -22,6 +22,7 @@ from arbitron.domain.market import Candle, Timeframe
 from arbitron.domain.orders import Order
 from arbitron.domain.risk import KillSwitch, RiskDecision
 from arbitron.domain.signals import Signal
+from arbitron.domain.strategies import StrategyConfig, StrategyCursor
 
 
 class ConcurrencyConflict(Exception):  # noqa: N818 - domain term, not a generic error
@@ -57,6 +58,25 @@ class CandleRepository(Protocol):
         end: datetime,
     ) -> Sequence[Candle]:
         """Closed candles with ``start <= open_time < end``, ascending."""
+        ...
+
+
+class StrategyConfigRepository(Protocol):
+    async def add_if_absent(self, config: StrategyConfig, *, created_at: datetime) -> bool:
+        """Write-once snapshot keyed by ``config.config_hash``."""
+        ...
+
+    async def get(self, config_hash: str) -> StrategyConfig | None: ...
+
+
+class StrategyCursorRepository(Protocol):
+    async def get(
+        self, config_hash: str, exchange_id: str, symbol: str, timeframe: Timeframe
+    ) -> StrategyCursor | None: ...
+
+    async def save(self, previous: StrategyCursor | None, updated: StrategyCursor) -> None:
+        """Advance the cursor. Raises ``ConcurrencyConflict`` if ``previous`` is stale,
+        and ``ValueError`` if it would move backwards or change identity."""
         ...
 
 
@@ -135,6 +155,8 @@ class SystemEventRepository(Protocol):
 
 class UnitOfWork(Protocol):
     candles: CandleRepository
+    strategy_configs: StrategyConfigRepository
+    strategy_cursors: StrategyCursorRepository
     signals: SignalRepository
     orders: OrderRepository
     fills: FillRepository

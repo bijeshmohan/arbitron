@@ -61,3 +61,19 @@ def is_multiple_of_step(value: Decimal, step: Decimal) -> bool:
     require_positive("step", step)
     with localcontext(FINANCIAL_CONTEXT):
         return value % step == 0
+
+
+def canonical_str(value: Decimal) -> str:
+    """Plain decimal text without exponent or trailing zeros: ``12.500`` -> ``12.5``.
+
+    Numerically equal Decimals can carry different exponents depending on their
+    source (``NUMERIC(38, 18)`` returns ``12.500000000000000000``). Use this
+    whenever a Decimal becomes part of persisted or compared text, so the text
+    depends only on the value.
+    """
+    require_decimal("value", value)
+    # normalize() rounds to the context precision; give it exactly as many
+    # digits as the value has so nothing is ever rounded away.
+    exact = Context(prec=max(len(value.as_tuple().digits), 1))
+    text = f"{value.normalize(exact):f}"
+    return "0" if text == "-0" else text

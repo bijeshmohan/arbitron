@@ -180,3 +180,32 @@ def test_empty_secret_env_vars_count_as_absent(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("ARBITRON_EXCHANGE_API_SECRET", "")
 
     assert not Secrets(_env_file=None).has_exchange_credentials  # pyright: ignore[reportCallIssue]
+
+
+def test_strategy_parameters_are_loaded() -> None:
+    config = load_config(EXAMPLE_PAPER)
+
+    assert config.strategy.parameters == {"fast": 10, "slow": 30}
+
+
+def test_strategy_parameters_default_to_empty() -> None:
+    data = example_data()
+    del data["strategy"]["parameters"]
+
+    assert ArbitronConfig.model_validate(data).strategy.parameters == {}
+
+
+def test_float_strategy_parameter_is_refused() -> None:
+    data = example_data()
+    data["strategy"]["parameters"]["fast"] = 10.5
+
+    with pytest.raises(ValidationError, match="floats are not allowed"):
+        ArbitronConfig.model_validate(data)
+
+
+def test_nested_strategy_parameter_is_refused() -> None:
+    data = example_data()
+    data["strategy"]["parameters"]["fast"] = {"x": 1}
+
+    with pytest.raises(ValidationError):
+        ArbitronConfig.model_validate(data)

@@ -4,7 +4,7 @@ Autonomous spot crypto trading bot. It runs in backtest and paper modes first,
 and its design rule is **fail closed**: if it can't establish its state with
 confidence, it stops opening positions and asks for review.
 
-> **Status:** Phase 3 (Binance market data) complete. There is no trading logic yet.
+> **Status:** Phase 4 (strategy signals) complete. There is no trading logic yet.
 > Live mode can't be selected. See [`plan.md`](plan.md) for the full
 > specification and phased roadmap.
 
@@ -76,6 +76,28 @@ uv run arbitron market sync configs/paper.toml --follow   # after every candle c
 Exit codes: `0` ok, `1` invalid config, `2` database error, `3` the data-quality
 gate is blocking (stale data, missing history, clock skew, inactive market, ...),
 `4` venue request failed.
+
+## Strategy signals
+
+The configured strategy turns finalized candles into buy/sell **signals**. No
+orders are created yet. The bundled `sma_cross` strategy is a software
+integration fixture, not a trading recommendation.
+
+```bash
+uv run arbitron strategy run configs/paper.toml            # sync data, evaluate new candles
+uv run arbitron strategy run configs/paper.toml --follow   # after every candle close
+uv run arbitron strategy replay configs/paper.toml --start 2026-10-01T00:00:00Z
+```
+
+- `run` evaluates only when the data-quality gate passes. On first run it
+  evaluates only the latest closed candle; afterwards it evaluates every new
+  candle, and records signals and its progress in the database.
+- `replay` prints what the strategy would have signaled over stored candles
+  and writes nothing. It uses the same evaluation code as `run`, so the two
+  agree.
+- Strategy parameters live under `[strategy.parameters]`. The configured
+  `version` must match the strategy code's version, or the config is
+  rejected.
 
 ## Development
 

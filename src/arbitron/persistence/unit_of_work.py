@@ -10,6 +10,8 @@ from arbitron.persistence.repositories import (
     SqlOrderRepository,
     SqlRiskDecisionRepository,
     SqlSignalRepository,
+    SqlStrategyConfigRepository,
+    SqlStrategyCursorRepository,
     SqlSystemEventRepository,
 )
 from arbitron.ports.repositories import (
@@ -19,6 +21,8 @@ from arbitron.ports.repositories import (
     OrderRepository,
     RiskDecisionRepository,
     SignalRepository,
+    StrategyConfigRepository,
+    StrategyCursorRepository,
     SystemEventRepository,
 )
 
@@ -34,6 +38,8 @@ class SqlUnitOfWork:
         self._session = session_factory()
         self._entered = False
         self.candles: CandleRepository = SqlCandleRepository(self._session)
+        self.strategy_configs: StrategyConfigRepository = SqlStrategyConfigRepository(self._session)
+        self.strategy_cursors: StrategyCursorRepository = SqlStrategyCursorRepository(self._session)
         self.signals: SignalRepository = SqlSignalRepository(self._session)
         self.orders: OrderRepository = SqlOrderRepository(self._session)
         self.fills: FillRepository = SqlFillRepository(self._session)

@@ -128,3 +128,46 @@ def test_market_sync_requires_database_url(
 
     assert main(["market", "sync", str(EXAMPLE_PAPER)]) == EXIT_DATABASE_ERROR
     assert "ARBITRON_DATABASE_URL is not set" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ('version = "1"', 'version = "2"'),
+        ("slow = 30", "slow = 5"),
+        ('id = "sma_cross"', 'id = "nope"'),
+    ],
+)
+def test_check_config_rejects_bad_strategy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], replacement: str, message: str
+) -> None:
+    bad = tmp_path / "bad.toml"
+    bad.write_text(EXAMPLE_PAPER.read_text().replace(replacement, message))
+
+    assert main(["check-config", str(bad)]) == EXIT_INVALID_CONFIG
+    assert "error:" in capsys.readouterr().err
+
+
+def test_check_config_reports_strategy_details(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["check-config", str(EXAMPLE_PAPER)]) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "lookback=31" in out
+    assert "strategy config hash:" in out
+
+
+def test_replay_rejects_unconfigured_symbol(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("ARBITRON_DATABASE_URL", "postgresql+psycopg://u:p@127.0.0.1:1/db")
+
+    code = main(["strategy", "replay", str(EXAMPLE_PAPER), "--symbol", "ETH/USDT"])
+
+    assert code == EXIT_INVALID_CONFIG
+    assert "not in the configured symbols" in capsys.readouterr().err
+
+
+def test_replay_rejects_bad_timestamp(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["strategy", "replay", str(EXAMPLE_PAPER), "--start", "yesterday"])
+    assert "invalid ISO-8601" in capsys.readouterr().err

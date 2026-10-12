@@ -1,7 +1,7 @@
 """Wires adapter, collector, and monitor together for one config (used by the CLI)."""
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -94,18 +94,33 @@ class MarketDataService:
         *,
         stop: asyncio.Event,
     ) -> None:
-        """Run a cycle after every candle close until ``stop`` is set.
+        """Run a cycle after every candle close until ``stop`` is set (see ``follow_closes``)."""
+        await follow_closes(
+            self.run_cycle, on_cycle, on_error, stop=stop, wait=self.seconds_until_next_close
+        )
 
-        A venue failure (after read retries) is reported and the next cycle is
-        attempted. Meanwhile the stored data ages and the quality gate turns
-        ``STALE``, so a persistent outage fails closed without stopping ingestion.
-        """
-        while not stop.is_set():
-            try:
-                on_cycle(await self.run_cycle())
-            except VenueError as exc:
-                on_error(exc)
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=self.seconds_until_next_close())
-            except TimeoutError:
-                continue
+
+async def follow_closes[T](
+    cycle: Callable[[], Awaitable[T]],
+    on_cycle: Callable[[T], None],
+    on_error: Callable[[VenueError], None],
+    *,
+    stop: asyncio.Event,
+    wait: Callable[[], float],
+) -> None:
+    """Run ``cycle`` repeatedly, sleeping ``wait()`` seconds between runs, until ``stop``.
+
+    A venue failure (after read retries) is reported and the next cycle is
+    attempted. Meanwhile the stored data ages and the quality gate turns
+    ``STALE``, so a persistent outage fails closed without stopping ingestion.
+    Any other exception propagates and ends the loop.
+    """
+    while not stop.is_set():
+        try:
+            on_cycle(await cycle())
+        except VenueError as exc:
+            on_error(exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=wait())
+        except TimeoutError:
+            continue

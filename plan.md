@@ -253,6 +253,7 @@ arbitron/
 │       │   ├── positions.py
 │       │   ├── portfolio.py
 │       │   ├── risk.py             # risk decisions, reason codes, kill switch
+│       │   ├── strategies.py       # config snapshots, evaluation cursors
 │       │   └── events.py
 │       ├── ports/
 │       │   ├── errors.py           # venue error taxonomy (§8.1)
@@ -273,9 +274,10 @@ arbitron/
 │       │   ├── candles.py          # alignment, series checks, gaps
 │       │   ├── freshness.py        # data-quality gate (§9.2)
 │       │   └── service.py          # sync cycle / follow loop
-│       ├── strategy/
-│       │   ├── base.py
-│       │   ├── registry.py
+│       ├── strategy/               # stdlib + domain imports only (tested)
+│       │   ├── base.py             # Strategy protocol, context, proposals
+│       │   ├── evaluation.py       # shared live/replay evaluation, replay()
+│       │   ├── registry.py         # config -> strategy, version check
 │       │   └── implementations/
 │       │       └── sma_cross.py
 │       ├── sizing/
@@ -312,6 +314,8 @@ arbitron/
 │       │   ├── migrations/         # Alembic env + versions (packaged)
 │       │   └── repositories/
 │       ├── application/
+│       │   ├── strategy_runner.py  # live evaluation, cursor, persistence
+│       │   ├── pipeline.py         # market cycle -> quality gate -> strategy
 │       │   ├── engine.py
 │       │   ├── supervisor.py
 │       │   └── lifecycle.py
@@ -530,9 +534,13 @@ Minimum tables:
 **`bot_instances`** - `id`, `name`, `mode`, `environment` -
 `started_at`, `stopped_at`, `version` - `status`, `config_hash`
 
-**`strategy_configs`** - `id`, `strategy_id`, `version`,
-`parameters_json` - `enabled`, `created_at` - immutable versioned config
-snapshots
+**`strategy_configs`** - `config_hash` (PK), `strategy_id`, `version`,
+`parameters`, `created_at` - immutable versioned config snapshots
+(append-only). *Implemented in Phase 4.* `enabled` stays in the TOML
+config: it is operational state, not part of the snapshot's identity.
+
+**`strategy_cursors`** - `config_hash`, exchange, symbol, timeframe (PK) -
+`last_open_time`, `updated_at`. *Implemented in Phase 4.*
 
 **`strategy_runs`** - `id`, `bot_instance_id`, `strategy_id`,
 `started_at`, `ended_at` - `status`, `last_processed_event`
@@ -549,8 +557,8 @@ retrieval
 
 ### 7.3 Trading records
 
-**`signals`** - signal identity, strategy/version, market, direction,
-reason, timestamps - unique dedupe key
+**`signals`** - signal identity, strategy/version, `config_hash` (FK),
+market, direction, reason, timestamps - unique dedupe key; append-only
 
 **`risk_decisions`** - signal/intent reference, approved, reason codes,
 observed metrics, policy version
@@ -715,19 +723,28 @@ request count, latency, error rate, and rate-limit responses.
 
 ### 10.1 Interface
 
-Define a protocol such as:
+Implemented protocol (`src/arbitron/strategy/base.py`):
 
 ``` python
 class Strategy(Protocol):
     strategy_id: str
-    version: str
+    version: str          # must equal the config's version (enforced by the registry)
+    parameters: Mapping[str, ParameterValue]
+    lookback: int         # closed candles per evaluation, including the current one
 
-    async def on_candle(
-        self,
-        candle: Candle,
-        context: StrategyContext,
-    ) -> Sequence[Signal]: ...
+    def evaluate(self, context: StrategyContext) -> Sequence[SignalProposal]: ...
 ```
+
+`evaluate` is deliberately **synchronous**, not `async` as originally
+sketched: a sync function cannot await I/O, so "no network or database
+access from strategies" is enforced by construction (consistent with
+§3.2.1). Strategies return direction-only `SignalProposal`s (side, reason,
+explanation, metadata), at most one per candle; the engine stamps identity
+(strategy, version, config hash, market, candle time) onto the `Signal`, so
+a strategy cannot forge it. Any Decimal placed in signal text must be
+formatted with `domain.money.canonical_str` so the text does not depend on
+the Decimal's exponent (values read from `NUMERIC(38,18)` differ in
+representation from equal in-memory values).
 
 `StrategyContext` should provide only required, immutable inputs: recent
 candles/features, current strategy-owned state, and a read-only
@@ -737,10 +754,25 @@ network clients, or order submission methods.
 ### 10.2 Determinism and replay
 
 -   Same input history + same config/version should produce the same
-    signals.
--   Persist strategy version and parameter snapshot for each run.
--   Make event processing idempotent using a stable key such as
-    strategy/version/market/timeframe/candle timestamp.
+    signals. Verified by a test that runs the live runner candle by
+    candle and compares its persisted signals with `replay` over the same
+    candles.
+-   Persist strategy version and parameter snapshot for each run: the
+    immutable `strategy_configs` row keyed by `config_hash` (strategy +
+    version + parameters). The config hash is part of every signal's
+    identity, so changing a parameter yields a distinct signal stream.
+-   Make event processing idempotent using a stable key:
+    strategy/version/config hash/market/timeframe/candle timestamp. A
+    per-market `strategy_cursors` row records the last evaluated candle and
+    advances in the same transaction as the signals.
+-   On first run (no cursor) the live runner evaluates only the latest
+    closed candle; history is never back-filled into persisted signals.
+    After downtime it evaluates every missed candle in order, up to a
+    bounded catch-up limit (excess is skipped and recorded). Signals from
+    catch-up describe past candles; the order pipeline must refuse to act
+    on stale signals (Phase 6).
+-   Evaluation is refused unless the market-data quality gate for that
+    symbol is `ok`, using the strategy's own lookback as the requirement.
 -   Support replay from stored candles for debugging and backtesting.
 -   **Strategy state is recomputed, not checkpointed, for the MVP.** On
     startup or replay, a strategy rebuilds its state from stored
@@ -1298,11 +1330,11 @@ stale/invalid data prevents strategy evaluation or order creation.
 
 ### Phase 4 --- Strategy and replay
 
--   [ ] Define strategy protocol/context.
--   [ ] Implement one simple example strategy.
--   [ ] Add event dedupe and deterministic replay.
--   [ ] Persist signals with strategy version/config snapshot.
--   [ ] Test warm-up and candle-close timing.
+-   [x] Define strategy protocol/context.
+-   [x] Implement one simple example strategy.
+-   [x] Add event dedupe and deterministic replay.
+-   [x] Persist signals with strategy version/config snapshot.
+-   [x] Test warm-up and candle-close timing.
 
 **Acceptance:** identical inputs/config produce identical signals; no
 order execution is possible from strategy module.
@@ -1327,6 +1359,9 @@ any risk-state failure blocks orders.
 -   [ ] Implement the paper broker (`ExecutionPort` + `AccountPort`)
     on top of the real `MarketDataPort`.
 -   [ ] Implement intent lifecycle and order state machine.
+-   [ ] Refuse to act on stale signals (source candle older than the
+    latest closed candle, or beyond a configured age), since catch-up
+    after downtime persists signals for past candles.
 -   [ ] Persist before side effects.
 -   [ ] Implement the shared `simulation` fill/fee model and document
     it.

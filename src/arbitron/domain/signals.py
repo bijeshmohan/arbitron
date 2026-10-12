@@ -15,13 +15,14 @@ class Signal:
     """A strategy's directional view on one finalized candle.
 
     A signal carries direction and rationale only, never a quantity: sizing is
-    the sizer's job and approval is the risk engine's. A strategy emits at most
-    one signal per (strategy, version, market, timeframe, candle), which is
-    what the dedupe key encodes.
+    the sizer's job and approval is the risk engine's. A strategy config emits
+    at most one signal per (config, market, timeframe, candle), which is what
+    the dedupe key encodes.
     """
 
     strategy_id: str
     strategy_version: str
+    config_hash: str  # StrategyConfig.config_hash: strategy + version + parameters
     exchange_id: str
     symbol: str
     timeframe: Timeframe
@@ -34,7 +35,14 @@ class Signal:
     metadata: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
-        for name in ("strategy_id", "strategy_version", "exchange_id", "symbol", "reason_code"):
+        for name in (
+            "strategy_id",
+            "strategy_version",
+            "config_hash",
+            "exchange_id",
+            "symbol",
+            "reason_code",
+        ):
             require_text(name, getattr(self, name))
         require_utc("source_candle_time", self.source_candle_time)
         require_utc("created_at", self.created_at)
@@ -46,6 +54,7 @@ class Signal:
             (
                 self.strategy_id,
                 self.strategy_version,
+                self.config_hash,
                 self.exchange_id,
                 self.symbol,
                 self.timeframe.value,
