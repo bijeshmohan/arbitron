@@ -28,14 +28,28 @@ enabled = true
 fast = 10
 slow = 30
 
+# Risk limits. Example values for paper trading only; they are NOT recommended
+# financial limits. Amounts are in the quote currency (USDT here).
 [risk]
+trading_enabled = true
 max_order_notional = "50"
 max_asset_exposure = "100"
 max_total_exposure = "100"
 max_open_orders = 2
+max_orders_per_hour = 6
 max_daily_loss = "10"
 max_drawdown_pct = "5"
+max_spread_pct = "0.2"
+min_quote_reserve = "10"
 max_market_data_age_seconds = 600
+max_ticker_age_seconds = 10
+
+# Fixed quote amount per entry; buy only when flat, sell the whole position.
+# Orders are immediate-or-cancel limit orders within max_slippage_pct of the book.
+[sizing]
+entry_notional = "25"
+max_slippage_pct = "0.1"
+assumed_fee_pct = "0.1"
 
 [execution]
 allow_market_orders = false

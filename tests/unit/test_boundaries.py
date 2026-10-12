@@ -40,6 +40,9 @@ _CHECK = textwrap.dedent(
         ("arbitron.ports", ("arbitron.ports", "arbitron.domain")),
         # Strategies get no exchange, database, network, or order-submission access.
         ("arbitron.strategy", ("arbitron.strategy", "arbitron.domain")),
+        # Sizing and risk are pure decisions over a snapshot: no I/O of any kind.
+        ("arbitron.sizing", ("arbitron.sizing", "arbitron.domain")),
+        ("arbitron.risk", ("arbitron.risk", "arbitron.domain")),
     ],
 )
 def test_package_imports_only_stdlib_and_allowed_internals(

@@ -4,7 +4,7 @@ Autonomous spot crypto trading bot. It runs in backtest and paper modes first,
 and its design rule is **fail closed**: if it can't establish its state with
 confidence, it stops opening positions and asks for review.
 
-> **Status:** Phase 4 (strategy signals) complete. There is no trading logic yet.
+> **Status:** Phase 5 (sizing and risk gate) complete. There is no trading logic yet.
 > Live mode can't be selected. See [`plan.md`](plan.md) for the full
 > specification and phased roadmap.
 
@@ -75,7 +75,8 @@ uv run arbitron market sync configs/paper.toml --follow   # after every candle c
 
 Exit codes: `0` ok, `1` invalid config, `2` database error, `3` the data-quality
 gate is blocking (stale data, missing history, clock skew, inactive market, ...),
-`4` venue request failed.
+`4` venue request failed, `5` the request isn't allowed in the current state
+(for example, arming a tripped kill switch without a review first).
 
 ## Strategy signals
 
@@ -98,6 +99,29 @@ uv run arbitron strategy replay configs/paper.toml --start 2026-10-01T00:00:00Z
 - Strategy parameters live under `[strategy.parameters]`. The configured
   `version` must match the strategy code's version, or the config is
   rejected.
+
+## Sizing, risk, and the kill switch
+
+Every order intent is sized by `[sizing]` and must be approved by the risk
+gate (`[risk]`) before it can go anywhere. The database itself refuses to
+approve an order without a recorded risk decision.
+
+- Sizing: a fixed quote amount per entry; buy only when flat; sell the whole
+  position; immediate-or-cancel limit orders within `max_slippage_pct` of
+  the book.
+- The risk limits have no defaults. The example values are for paper
+  trading only. Daily loss, drawdown, exposure and frequency limits block
+  new entries, never exits.
+
+The kill switch starts in `recovery_review`. Nothing trades until a named
+operator arms it:
+
+```bash
+uv run arbitron killswitch status
+uv run arbitron killswitch arm --operator NAME --ack "what you reviewed"
+uv run arbitron killswitch trip --operator NAME --reason "why"     # emergency stop
+uv run arbitron killswitch review --operator NAME --reason "..."   # required before re-arming
+```
 
 ## Development
 

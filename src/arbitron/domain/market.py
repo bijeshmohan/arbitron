@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 from arbitron.domain._checks import (
     require_non_negative,
@@ -11,6 +11,7 @@ from arbitron.domain._checks import (
 )
 from arbitron.domain.enums import MarketType
 from arbitron.domain.errors import DomainValidationError
+from arbitron.domain.money import FINANCIAL_CONTEXT, round_down_to_step
 
 _TIMEFRAME_RE = re.compile(r"^([1-9][0-9]*)([mhdw])$")
 _TIMEFRAME_UNITS = {
@@ -73,6 +74,18 @@ class Market:
         require_positive("price_step", self.price_step)
         require_non_negative("min_amount", self.min_amount)
         require_non_negative("min_cost", self.min_cost)
+
+    def tradeable_quantity(self, quantity: Decimal, price: Decimal) -> Decimal:
+        """``quantity`` rounded down to the lot step, or 0 if below the venue minimums.
+
+        Holdings that round to 0 here are dust: they cannot be sold, so they
+        count as flat for position rules.
+        """
+        amount = round_down_to_step(max(quantity, Decimal(0)), self.amount_step)
+        with localcontext(FINANCIAL_CONTEXT):
+            if amount == 0 or amount < self.min_amount or amount * price < self.min_cost:
+                return Decimal(0)
+        return amount
 
 
 @dataclass(frozen=True, slots=True)

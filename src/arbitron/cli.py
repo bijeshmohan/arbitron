@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncEngine
 
+    from arbitron.application.kill_switch import KillSwitchService
+    from arbitron.domain.risk import KillSwitch
     from arbitron.domain.signals import Signal
     from arbitron.exchange.ccxt_adapter import CcxtMarketData
     from arbitron.market.service import CycleOutcome
@@ -37,6 +39,7 @@ EXIT_INVALID_CONFIG = 1
 EXIT_DATABASE_ERROR = 2
 EXIT_DATA_QUALITY = 3
 EXIT_VENUE_ERROR = 4
+EXIT_INVALID_STATE = 5
 
 Command = Callable[[argparse.Namespace], Coroutine[None, None, int]]
 
@@ -72,6 +75,7 @@ async def _check_config(args: argparse.Namespace) -> int:
         strategy = _require_strategy(config)
     except _CommandExit as exc:
         return exc.code
+    from arbitron.application.policies import risk_policy_version  # noqa: PLC0415
     from arbitron.strategy.evaluation import config_of  # noqa: PLC0415
 
     secrets = Secrets()
@@ -85,6 +89,11 @@ async def _check_config(args: argparse.Namespace) -> int:
         f"enabled={config.strategy.enabled}"
     )
     print(f"  strategy config hash: {config_of(strategy).config_hash}")
+    print(
+        f"  sizing:      {config.sizing.entry_notional} {config.exchange.quote_currency} "
+        f"per entry, max slippage {config.sizing.max_slippage_pct}%"
+    )
+    print(f"  risk policy: {risk_policy_version(config)}")
     print(f"  credentials: {'present' if secrets.has_exchange_credentials else 'absent'}")
     print(f"  config hash: {config.config_hash()}")
     return EXIT_OK
@@ -406,6 +415,55 @@ async def _strategy_replay(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+@asynccontextmanager
+async def _kill_switch_service() -> AsyncGenerator["KillSwitchService"]:
+    from arbitron.application.kill_switch import KillSwitchService  # noqa: PLC0415
+    from arbitron.clocks import SystemClock  # noqa: PLC0415
+    from arbitron.persistence.db import create_engine, create_session_factory  # noqa: PLC0415
+    from arbitron.persistence.unit_of_work import SqlUnitOfWork  # noqa: PLC0415
+
+    url = _database_url()
+    if url is None:
+        raise _CommandExit(EXIT_DATABASE_ERROR)
+    engine = create_engine(url, pool_size=1)
+    try:
+        if (failure := await _schema_failure(engine)) is not None:
+            raise _CommandExit(failure)
+        factory = create_session_factory(engine)
+        yield KillSwitchService(lambda: SqlUnitOfWork(factory), SystemClock())
+    finally:
+        await engine.dispose()
+
+
+def _print_kill_switch(state: "KillSwitch") -> None:
+    trading = "ALLOWED" if state.allows_new_orders else "BLOCKED"
+    print(f"kill switch: {state.state.value} (new orders {trading})")
+    print(f"  since:  {state.changed_at.isoformat()}")
+    print(f"  by:     {state.actor}")
+    print(f"  reason: {state.reason}")
+
+
+async def _kill_switch(args: argparse.Namespace) -> int:
+    from arbitron.domain.errors import DomainError  # noqa: PLC0415
+
+    async with _kill_switch_service() as service:
+        try:
+            match args.kill_switch_command:
+                case "status":
+                    state = await service.ensure_initialized()
+                case "trip":
+                    state = await service.trip(reason=args.reason, actor=args.operator)
+                case "review":
+                    state = await service.begin_review(reason=args.reason, actor=args.operator)
+                case _:
+                    state = await service.arm(operator=args.operator, acknowledgement=args.ack)
+        except DomainError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_INVALID_STATE
+        _print_kill_switch(state)
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="arbitron",
@@ -466,6 +524,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--end", type=_utc_timestamp, help="ISO-8601 UTC end, exclusive (default: latest)"
     )
     replay_cmd.set_defaults(handler=_strategy_replay)
+
+    kill = subcommands.add_parser(
+        "killswitch", help="show or change the durable kill switch (new orders need ARMED)"
+    )
+    kill_commands = kill.add_subparsers(
+        dest="kill_switch_command", required=True, metavar="KILLSWITCH_COMMAND"
+    )
+    kill_commands.add_parser("status", help="show the current state").set_defaults(
+        handler=_kill_switch
+    )
+    trip = kill_commands.add_parser("trip", help="emergency stop: block all new orders")
+    trip.add_argument("--operator", required=True, help="who is tripping it (audit trail)")
+    trip.add_argument("--reason", required=True)
+    trip.set_defaults(handler=_kill_switch)
+    review = kill_commands.add_parser("review", help="move a tripped switch to recovery review")
+    review.add_argument("--operator", required=True)
+    review.add_argument("--reason", required=True)
+    review.set_defaults(handler=_kill_switch)
+    arm = kill_commands.add_parser("arm", help="allow new orders again (only from recovery review)")
+    arm.add_argument("--operator", required=True, help="named operator taking responsibility")
+    arm.add_argument("--ack", required=True, help="what was reviewed and why it is safe")
+    arm.set_defaults(handler=_kill_switch)
 
     return parser
 

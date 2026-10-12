@@ -209,3 +209,59 @@ def test_nested_strategy_parameter_is_refused() -> None:
 
     with pytest.raises(ValidationError):
         ArbitronConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("section", ["sizing"])
+def test_sizing_section_is_required(section: str) -> None:
+    data = example_data()
+    del data[section]
+
+    with pytest.raises(ValidationError):
+        ArbitronConfig.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "trading_enabled",
+        "max_orders_per_hour",
+        "max_spread_pct",
+        "min_quote_reserve",
+        "max_ticker_age_seconds",
+    ],
+)
+def test_new_risk_limits_have_no_defaults(field: str) -> None:
+    data = example_data()
+    del data["risk"][field]
+
+    with pytest.raises(ValidationError):
+        ArbitronConfig.model_validate(data)
+
+
+def test_entry_larger_than_max_order_is_refused() -> None:
+    data = example_data()
+    data["sizing"]["entry_notional"] = "51"
+
+    with pytest.raises(ValidationError, match="every entry would be rejected"):
+        ArbitronConfig.model_validate(data)
+
+
+def test_symbols_must_share_one_quote() -> None:
+    data = with_override("exchange", "symbols", ["BTC/USDT", "ETH/BTC"])
+
+    with pytest.raises(ValidationError, match="one quote currency"):
+        ArbitronConfig.model_validate(data)
+
+
+def test_quote_currency() -> None:
+    assert load_config(EXAMPLE_PAPER).exchange.quote_currency == "USDT"
+
+
+def test_zero_reserve_and_fee_are_allowed() -> None:
+    data = example_data()
+    data["risk"]["min_quote_reserve"] = "0"
+    data["sizing"]["assumed_fee_pct"] = "0"
+
+    config = ArbitronConfig.model_validate(data)
+
+    assert config.risk.min_quote_reserve == 0

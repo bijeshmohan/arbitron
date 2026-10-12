@@ -254,6 +254,7 @@ arbitron/
 │       │   ├── portfolio.py
 │       │   ├── risk.py             # risk decisions, reason codes, kill switch
 │       │   ├── strategies.py       # config snapshots, evaluation cursors
+│       │   ├── snapshot.py         # TradingSnapshot read by sizing and risk
 │       │   └── events.py
 │       ├── ports/
 │       │   ├── errors.py           # venue error taxonomy (§8.1)
@@ -280,14 +281,11 @@ arbitron/
 │       │   ├── registry.py         # config -> strategy, version check
 │       │   └── implementations/
 │       │       └── sma_cross.py
-│       ├── sizing/
-│       │   ├── sizer.py
-│       │   └── policies.py
-│       ├── risk/
-│       │   ├── manager.py
-│       │   ├── limits.py
-│       │   ├── exposure.py
-│       │   └── kill_switch.py
+│       ├── sizing/                 # stdlib + domain imports only (tested)
+│       │   └── sizer.py            # fixed_quote_notional_v1, IOC limits
+│       ├── risk/                   # stdlib + domain imports only (tested)
+│       │   ├── manager.py          # RiskPolicy, decide(), loss breaches
+│       │   └── exposure.py         # valuation, worst-case exposure
 │       ├── execution/
 │       │   ├── order_manager.py
 │       │   ├── submission.py
@@ -316,6 +314,9 @@ arbitron/
 │       ├── application/
 │       │   ├── strategy_runner.py  # live evaluation, cursor, persistence
 │       │   ├── pipeline.py         # market cycle -> quality gate -> strategy
+│       │   ├── policies.py         # config -> RiskPolicy / SizingPolicy
+│       │   ├── risk_gate.py        # persist decision + order transition
+│       │   ├── kill_switch.py      # operator kill-switch service
 │       │   ├── engine.py
 │       │   ├── supervisor.py
 │       │   └── lifecycle.py
@@ -823,6 +824,29 @@ Choose conservative initial values for paper mode; live values require
 explicit operator configuration and review. Do not invent a universally
 safe risk percentage.
 
+### 11.1.1 Operator decisions (2026-10-12)
+
+-   **Sizing:** fixed quote amount per entry (`[sizing] entry_notional`),
+    policy `fixed_quote_notional_v1`.
+-   **Positions:** BUY only when flat (no adding); SELL closes the whole
+    position. Holdings below the venue minimums are dust and count as flat.
+-   **Pricing:** marketable limit orders, time-in-force IOC: BUY at best
+    ask + `max_slippage_pct` (rounded down to the tick), SELL at best bid −
+    `max_slippage_pct` (rounded up). Market orders stay disabled.
+-   **Valuation source:** each base asset is marked at its symbol's last
+    closed candle close; only the quote currency and configured base assets
+    are valued (other holdings are reported, not valued). Ticker bid/ask is
+    used at order time for pricing and the spread/band checks.
+-   **Exits are exempt from risk-increasing limits.** Per-order notional,
+    exposure, open-order count, order frequency, daily loss, drawdown,
+    balance/reserve, and the flat-only rule apply to BUYs. Fail-closed
+    conditions (kill switch, trading disabled, readiness, reconciliation,
+    exchange health, market data, ticker, precision, minimums, price band)
+    apply to every order. Blocking an exit when limits are breached would
+    increase risk.
+-   **Boundaries:** daily loss and drawdown block entries once they *reach*
+    the limit (`>=`); notional/exposure limits allow exactly the limit.
+
 ### 11.2 Position sizing (sizer, upstream of risk)
 
 Sizing lives in the `sizing` module, not in the risk engine, so the risk
@@ -857,6 +881,21 @@ procedure.
 Provide both configuration-based and operator-triggered kill switch. The
 emergency endpoint must be authenticated and audited. Avoid making a web
 dashboard the only way to stop trading.
+
+Implemented (Phase 5): first initialization of the kill switch is
+`RECOVERY_REVIEW`, so trading begins only after a named operator runs
+`arbitron killswitch arm --operator NAME --ack "..."`. `trip` works from
+any state. Every change writes a history row and a system event.
+`loss_limit_breaches()` reports daily-loss/drawdown breaches for the
+automatic trip, which the Phase 6 order pipeline wires in.
+
+### 11.3.1 Database enforcement
+
+A trigger on `orders` refuses `risk_approved` unless an approved
+`risk_decisions` row exists for that intent (and `risk_rejected` without a
+rejecting one), and refuses inserting orders in any state but `created`.
+No code path, including direct SQL, can approve an order without a
+persisted risk decision.
 
 ### 11.4 Fail-closed conditions
 
@@ -1341,15 +1380,15 @@ order execution is possible from strategy module.
 
 ### Phase 5 --- Sizing and risk engine
 
--   [ ] Implement risk policy model and configuration validation.
--   [ ] Implement balance/exposure calculations including pending
+-   [x] Implement risk policy model and configuration validation.
+-   [x] Implement balance/exposure calculations including pending
     orders.
--   [ ] Implement the sizer (`sizing` module): sizing policy, precision
+-   [x] Implement the sizer (`sizing` module): sizing policy, precision
     rounding, minimum amount/cost checks.
--   [ ] Implement risk re-verification of sizing invariants (reject,
+-   [x] Implement risk re-verification of sizing invariants (reject,
     never resize).
--   [ ] Implement durable kill switch and reason-coded decisions.
--   [ ] Add exhaustive boundary and failure tests.
+-   [x] Implement durable kill switch and reason-coded decisions.
+-   [x] Add exhaustive boundary and failure tests.
 
 **Acceptance:** every order intent requires an approved risk decision;
 any risk-state failure blocks orders.
@@ -1359,6 +1398,10 @@ any risk-state failure blocks orders.
 -   [ ] Implement the paper broker (`ExecutionPort` + `AccountPort`)
     on top of the real `MarketDataPort`.
 -   [ ] Implement intent lifecycle and order state machine.
+-   [ ] Build `TradingSnapshot` from the portfolio projection, venue, and
+    database (marks from last closed candles, fresh ticker, day-start and
+    peak equity, orders in the last hour, health flags).
+-   [ ] Trip the kill switch automatically on `loss_limit_breaches()`.
 -   [ ] Refuse to act on stale signals (source candle older than the
     latest closed candle, or beyond a configured age), since catch-up
     after downtime persists signals for past candles.
@@ -1497,10 +1540,10 @@ Do not guess these; use safe defaults and document assumptions:
     behavior.
 5.  **Risk limits:** user/operator must set values; no universal
     defaults should be treated as safe.
-6.  **Valuation source:** define how quote-currency equity and
-    unrealized P&L are calculated.
-7.  **Order policy:** market vs limit and cancellation/replacement
-    behavior.
+6.  **Valuation source:** **decided** (§11.1.1): last closed candle close.
+7.  **Order policy:** **decided** (§11.1.1): IOC marketable limits within a
+    slippage cap; no replacement of unfilled IOC remainders (a new signal
+    is needed).
 8.  **Existing-order response to kill switch:** define whether to cancel
     entries, retain exits, or require review.
 9.  **Alert channel:** choose Telegram, email, or another supported

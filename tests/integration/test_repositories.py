@@ -49,6 +49,9 @@ async def persist_new_order(uow: UowFactory) -> Order:
 async def transition(uow: UowFactory, previous: Order, target: OrderStatus, **kw: object) -> Order:
     updated = previous.transition(target, **kw)  # type: ignore[arg-type]
     async with uow() as tx:
+        if target is S.RISK_APPROVED:
+            # The database refuses risk_approved without an approved decision.
+            await tx.risk_decisions.add(RiskDecision(previous.id, (), "test", updated.updated_at))
         await tx.orders.apply_transition(previous, updated, event_for(previous, updated))
         await tx.commit()
     return updated

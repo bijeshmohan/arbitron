@@ -83,3 +83,36 @@ def test_strategy_run_and_replay_end_to_end(
     replay_out = capsys.readouterr().out
     assert "replay sma_cross v1" in replay_out
     assert "nothing was written" in replay_out
+
+
+def test_killswitch_cli_lifecycle(
+    database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from arbitron.cli import EXIT_INVALID_STATE  # noqa: PLC0415
+
+    monkeypatch.setenv("ARBITRON_DATABASE_URL", database_url)
+
+    assert main(["killswitch", "status"]) == EXIT_OK
+    assert "recovery_review (new orders BLOCKED)" in capsys.readouterr().out
+
+    assert (
+        main(["killswitch", "arm", "--operator", "bijesh", "--ack", "paper limits reviewed"])
+        == EXIT_OK
+    )
+    assert "armed (new orders ALLOWED)" in capsys.readouterr().out
+
+    assert main(["killswitch", "trip", "--operator", "bijesh", "--reason", "drill"]) == EXIT_OK
+    assert "tripped (new orders BLOCKED)" in capsys.readouterr().out
+
+    assert (
+        main(["killswitch", "arm", "--operator", "bijesh", "--ack", "too soon"])
+        == EXIT_INVALID_STATE
+    )
+    assert "not allowed" in capsys.readouterr().err
+
+    assert (
+        main(["killswitch", "review", "--operator", "bijesh", "--reason", "drill over"]) == EXIT_OK
+    )
+    capsys.readouterr()
+    assert main(["killswitch", "arm", "--operator", "system", "--ack", "x"]) == EXIT_INVALID_STATE
+    assert "named operator" in capsys.readouterr().err

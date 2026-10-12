@@ -6,6 +6,7 @@ values up to NUMERIC(38, 18) are represented without silent rounding.
 
 from decimal import (
     ROUND_DOWN,
+    ROUND_UP,
     Context,
     Decimal,
     DivisionByZero,
@@ -53,6 +54,21 @@ def round_down_to_step(value: Decimal, step: Decimal) -> Decimal:
         raise DomainValidationError(msg)
     with localcontext(FINANCIAL_CONTEXT):
         steps = (value / step).to_integral_value(rounding=ROUND_DOWN)
+        return (steps * step).quantize(step)
+
+
+def round_up_to_step(value: Decimal, step: Decimal) -> Decimal:
+    """Round a non-negative value up to a multiple of ``step``.
+
+    Used for SELL limit prices: rounding a price floor up never sells below it.
+    """
+    require_decimal("value", value)
+    require_positive("step", step)
+    if value < 0:
+        msg = f"value must not be negative, got {value}"
+        raise DomainValidationError(msg)
+    with localcontext(FINANCIAL_CONTEXT):
+        steps = (value / step).to_integral_value(rounding=ROUND_UP)
         return (steps * step).quantize(step)
 
 

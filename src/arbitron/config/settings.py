@@ -106,7 +106,15 @@ class ExchangeSection(_Section):
         if len(set(value)) != len(value):
             msg = "symbols must be unique"
             raise ValueError(msg)
+        quotes = {symbol.split("/")[1] for symbol in value}
+        if len(quotes) != 1:
+            msg = f"all symbols must share one quote currency, got {sorted(quotes)}"
+            raise ValueError(msg)
         return value
+
+    @property
+    def quote_currency(self) -> str:
+        return self.symbols[0].split("/")[1]
 
 
 def _check_no_float_parameters(value: object) -> None:
@@ -145,14 +153,31 @@ class StrategySection(_Section):
         return value
 
 
+NonNegativeDecimal = Annotated[
+    Decimal,
+    BeforeValidator(_reject_float),
+    Field(ge=0, allow_inf_nan=False),
+]
+
+
 class RiskSection(_Section):
+    """Risk limits. All required: there are no universally safe defaults (plan §11.1).
+
+    Amounts are in the quote currency; ``*_pct`` values are percentages.
+    """
+
+    trading_enabled: bool
     max_order_notional: PositiveDecimal
     max_asset_exposure: PositiveDecimal
     max_total_exposure: PositiveDecimal
     max_open_orders: int = Field(ge=1)
+    max_orders_per_hour: int = Field(ge=1)
     max_daily_loss: PositiveDecimal
     max_drawdown_pct: PositiveDecimal = Field(le=100)
+    max_spread_pct: PositiveDecimal = Field(le=10)
+    min_quote_reserve: NonNegativeDecimal
     max_market_data_age_seconds: int = Field(gt=0)
+    max_ticker_age_seconds: int = Field(gt=0, le=300)
 
     @model_validator(mode="after")
     def _consistent_limits(self) -> Self:
@@ -163,6 +188,19 @@ class RiskSection(_Section):
             msg = "max_asset_exposure must not exceed max_total_exposure"
             raise ValueError(msg)
         return self
+
+
+class SizingSection(_Section):
+    """Position sizing (policy ``fixed_quote_notional_v1``). All required.
+
+    - ``entry_notional``: quote spent per entry (BUY only when flat).
+    - ``max_slippage_pct``: marketable-limit cap above ask / floor below bid.
+    - ``assumed_fee_pct``: fee assumed when checking affordability.
+    """
+
+    entry_notional: PositiveDecimal
+    max_slippage_pct: PositiveDecimal = Field(le=5)
+    assumed_fee_pct: NonNegativeDecimal = Field(le=5)
 
 
 class ExecutionSection(_Section):
@@ -197,6 +235,7 @@ class ArbitronConfig(_Section):
     exchange: ExchangeSection
     strategy: StrategySection
     risk: RiskSection
+    sizing: SizingSection
     execution: ExecutionSection
     market: MarketSection = MarketSection()
     live: LiveSection = LiveSection()
@@ -210,6 +249,12 @@ class ArbitronConfig(_Section):
             raise ValueError(msg)
         if self.live.enabled or self.live.acknowledgement:
             msg = "[live] flags must be false unless app.mode is 'live'"
+            raise ValueError(msg)
+        if self.sizing.entry_notional > self.risk.max_order_notional:
+            msg = (
+                "sizing.entry_notional exceeds risk.max_order_notional; "
+                "every entry would be rejected"
+            )
             raise ValueError(msg)
         if (self.app.mode is Mode.SANDBOX) != self.exchange.sandbox:
             msg = "exchange.sandbox must be true if and only if app.mode is 'sandbox'"

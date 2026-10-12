@@ -38,6 +38,10 @@ class RiskReason(StrEnum):
     BALANCE_RESERVE = "balance_reserve"
     SPREAD_TOO_WIDE = "spread_too_wide"
     MARKET_ORDERS_DISALLOWED = "market_orders_disallowed"
+    INSUFFICIENT_BALANCE = "insufficient_balance"
+    TICKER_UNAVAILABLE = "ticker_unavailable"
+    PRICE_OUTSIDE_BAND = "price_outside_band"
+    POSITION_POLICY = "position_policy"  # e.g. entry while already long
     # Re-verified sizing invariants (§11.2)
     INSUFFICIENT_POSITION = "insufficient_position"
     PRECISION_VIOLATION = "precision_violation"
