@@ -3,16 +3,19 @@
 Per cycle:
 
 1. sync market data and run the quality gate; evaluate the strategy;
-2. build the trading snapshot (records equity);
-3. trip the kill switch on a daily-loss or drawdown breach;
-4. for each symbol, act on its latest signal if it is fresh (latest closed
+2. reconcile with the venue if due (and straight after any ambiguous
+   submission), see ``docs/failure-matrix.md``;
+3. build the trading snapshot (records equity; unresolved reconciliation
+   blocks new orders);
+4. trip the kill switch on a daily-loss or drawdown breach;
+5. for each symbol, act on its latest signal if it is fresh (latest closed
    candle, within one interval) and has not been acted on already.
 
 The caller must hold the single-instance lock for the paper account.
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -31,11 +34,14 @@ from arbitron.domain.market import Timeframe
 from arbitron.domain.risk import RiskReason
 from arbitron.domain.snapshot import TradingSnapshot
 from arbitron.execution.freshness import stale_reason
-from arbitron.execution.order_manager import OrderManager, OrderOutcome
+from arbitron.execution.order_manager import Action, OrderManager, OrderOutcome
+from arbitron.execution.reconciler import Reconciler, ReconciliationReport
+from arbitron.market.freshness import DataQualityReport
 from arbitron.market.service import MarketDataService, follow_closes
 from arbitron.paper.broker import PaperBroker
 from arbitron.ports.clock import Clock
 from arbitron.ports.errors import VenueError
+from arbitron.ports.execution import ExecutionPort
 from arbitron.ports.market_data import MarketDataPort
 from arbitron.ports.repositories import UnitOfWork
 from arbitron.risk.exposure import ValuationUnavailableError, valuation
@@ -47,12 +53,20 @@ TRIP_REASONS = frozenset({RiskReason.MAX_DAILY_LOSS, RiskReason.MAX_DRAWDOWN})
 
 
 @dataclass(frozen=True, slots=True)
+class StartupReport:
+    funded: bool  # the paper account was created and funded now
+    recovered: int  # orders found mid-submission and marked unknown
+    reconciliation: ReconciliationReport
+
+
+@dataclass(frozen=True, slots=True)
 class SessionOutcome:
     pipeline: PipelineOutcome
     equity: Decimal | None
     tripped: tuple[RiskReason, ...]
     orders: tuple[OrderOutcome, ...]
     skipped_signals: tuple[str, ...]
+    reconciliation: ReconciliationReport | None = None  # if one ran this cycle
 
 
 class PaperSession:
@@ -66,7 +80,11 @@ class PaperSession:
         uow_factory: Callable[[], UnitOfWork],
         clock: Clock,
         fill_model: FillModel | None = None,
+        submission_port: Callable[[PaperBroker], ExecutionPort] | None = None,
     ) -> None:
+        """``submission_port`` wraps the venue for order *submission* only; used to
+        inject faults (lost responses, timeouts). Reconciliation always reads the
+        venue directly, as it would read a real exchange."""
         self._config = config
         self._clock = clock
         self._uow_factory = uow_factory
@@ -118,17 +136,39 @@ class PaperSession:
             trading_enabled=config.risk.trading_enabled,
         )
         self._orders = OrderManager(
-            execution=broker,
+            execution=submission_port(broker) if submission_port else broker,
             uow_factory=uow_factory,
             clock=clock,
             sizing_policy=sizing_policy(config),
             risk_policy=self._risk_policy,
             submission_timeout=timedelta(seconds=config.execution.submission_timeout_seconds),
+            on_authentication_failure=lambda reason: self.kill_switch.trip(reason=reason),
         )
+        self.reconciler = Reconciler(
+            execution=broker,
+            account=broker,
+            order_manager=self._orders,
+            kill_switch=self.kill_switch,
+            uow_factory=uow_factory,
+            clock=clock,
+            markets=lambda: self.market.monitor.markets,
+            exchange_id=config.exchange.id,
+            symbols=config.exchange.symbols,
+            settle=timedelta(seconds=config.execution.unknown_order_settle_seconds),
+            max_age=timedelta(seconds=config.execution.unknown_order_max_age_seconds),
+        )
+        self._market_data = market_data
+        self._reconcile_every = timedelta(seconds=config.execution.reconciliation_interval_seconds)
+        self._last_reconciliation: ReconciliationReport | None = None
         self._ready = False
 
-    async def start(self) -> bool:
-        """Initialize the kill switch and fund the paper account. Returns True if funded now."""
+    async def start(self) -> StartupReport:
+        """Startup recovery sequence (plan §14.1). Trading is enabled only afterwards.
+
+        Kill switch initialized; paper account funded once; market metadata
+        loaded; orders interrupted mid-submission marked unknown; then a full
+        reconciliation. Discrepancies move the kill switch to review.
+        """
         await self.kill_switch.ensure_initialized()
         funded = await self.broker.ensure_funded(self._config.paper.starting_balance)
         if funded:
@@ -139,8 +179,20 @@ class PaperSession:
                 amount=str(self._config.paper.starting_balance),
                 asset=self._config.exchange.quote_currency,
             )
+        await self.market.monitor.refresh(self._market_data)
+        recovered = await self.reconciler.recover_interrupted()
+        report = await self._reconcile()
         self._ready = True
-        return funded
+        return StartupReport(funded=funded, recovered=len(recovered), reconciliation=report)
+
+    async def _reconcile(self) -> ReconciliationReport:
+        report = await self.reconciler.run()
+        self._last_reconciliation = report
+        return report
+
+    def _reconciliation_due(self) -> bool:
+        last = self._last_reconciliation
+        return last is None or self._clock.now() - last.started_at >= self._reconcile_every
 
     async def run_cycle(self) -> SessionOutcome:
         if not self._ready:
@@ -148,10 +200,11 @@ class PaperSession:
             raise RuntimeError(msg)
         pipeline = await self._pipeline.run_cycle()
         reports = {r.symbol: r for r in pipeline.market.reports}
-        snapshot = await self._snapshots.build(reports, system_ready=True)
+        reconciled = await self._reconcile() if self._reconciliation_due() else None
+        snapshot = await self._snapshot(reports)
         equity, tripped = await self._enforce_loss_limits(snapshot)
         if tripped:
-            snapshot = await self._snapshots.build(reports, system_ready=True)
+            snapshot = await self._snapshot(reports)
 
         latest = {r.symbol: r.latest_closed for r in pipeline.market.results}
         outcomes: list[OrderOutcome] = []
@@ -175,9 +228,24 @@ class PaperSession:
                     continue
                 outcome = await self._orders.act_on_signal(signal, snapshot)
                 outcomes.append(outcome)
-                if outcome.order is not None and outcome.order.exchange_order_id:
-                    snapshot = await self._snapshots.build(reports, system_ready=True)
-        return SessionOutcome(pipeline, equity, tripped, tuple(outcomes), tuple(skipped))
+                if outcome.action is Action.SUBMISSION_UNKNOWN:
+                    # docs/failure-matrix.md: reconcile straight after ambiguity.
+                    reconciled = await self._reconcile()
+                if outcome.order is not None and (
+                    outcome.order.exchange_order_id or outcome.action is Action.SUBMISSION_UNKNOWN
+                ):
+                    snapshot = await self._snapshot(reports)
+        return SessionOutcome(
+            pipeline, equity, tripped, tuple(outcomes), tuple(skipped), reconciled
+        )
+
+    async def _snapshot(self, reports: Mapping[str, DataQualityReport]) -> TradingSnapshot:
+        last = self._last_reconciliation
+        return await self._snapshots.build(
+            reports,
+            system_ready=self._ready,
+            reconciliation_clean=last is not None and last.clean,
+        )
 
     async def follow(
         self,

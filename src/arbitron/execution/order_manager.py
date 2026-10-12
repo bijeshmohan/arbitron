@@ -21,7 +21,7 @@ as unresolved), and reconciliation (Phase 7) establishes the truth.
 
 import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
@@ -93,8 +93,11 @@ class OrderManager:
         sizing_policy: SizingPolicy,
         risk_policy: RiskPolicy,
         submission_timeout: timedelta,
+        on_authentication_failure: Callable[[str], Awaitable[object]] | None = None,
     ) -> None:
         self._execution = execution
+        # docs/failure-matrix.md #4: bad credentials will not fix themselves.
+        self._on_auth_failure = on_authentication_failure
         self._uow_factory = uow_factory
         self._clock = clock
         self._sizing = sizing_policy
@@ -165,6 +168,8 @@ class OrderManager:
                 severity=Severity.CRITICAL,
                 error=f"{type(exc).__name__}: {exc}",
             )
+            if isinstance(exc, AuthenticationFailure) and self._on_auth_failure is not None:
+                await self._on_auth_failure(f"authentication failure on submission: {exc}")
             return OrderOutcome(signal.id, Action.EXCHANGE_REJECTED, rejected, str(exc))
         except (VenueError, TimeoutError) as exc:
             unknown = await self._move(
@@ -202,8 +207,10 @@ class OrderManager:
 
         trades: list[ExchangeTrade] = []
         try:
+            # From submission time, not the last update: reconciliation may
+            # resolve an order long after it was submitted.
             all_trades = await self._execution.fetch_trades(
-                order.intent.symbol, since=order.updated_at - TRADE_LOOKBACK
+                order.intent.symbol, since=order.intent.created_at - TRADE_LOOKBACK
             )
             trades = [t for t in all_trades if t.exchange_order_id == venue_order.exchange_order_id]
         except VenueError as exc:
@@ -211,6 +218,9 @@ class OrderManager:
         traded = sum((t.amount for t in trades), Decimal(0))
         if not problems and traded != venue_order.filled:
             problems.append(f"trades sum to {traded} but venue reports {venue_order.filled} filled")
+        if problems and order.status is S.RECONCILIATION_REQUIRED:
+            # Already awaiting reconciliation: nothing new to record.
+            return order
 
         now = max(self._clock.now(), order.updated_at)
         async with self._uow_factory() as tx:

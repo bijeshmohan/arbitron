@@ -115,6 +115,10 @@ class OrderRepository(Protocol):
 
     async def get(self, order_id: UUID) -> Order | None: ...
 
+    async def get_by_exchange_order_id(
+        self, exchange_id: str, exchange_order_id: str
+    ) -> Order | None: ...
+
     async def get_by_client_order_id(
         self, exchange_id: str, client_order_id: str
     ) -> Order | None: ...
@@ -186,6 +190,15 @@ class EquitySnapshotRepository(Protocol):
     async def latest(self, quote_currency: str) -> EquitySnapshot | None: ...
 
 
+class ReconciliationLookupRepository(Protocol):
+    async def record(self, order_id: UUID, *, checked_at: datetime, found: bool) -> None: ...
+
+    async def not_found_since(self, order_id: UUID, since: datetime) -> int:
+        """Not-found lookups at or after ``since``, counted only if no lookup since then
+        found the order (i.e. consecutive misses)."""
+        ...
+
+
 class SystemEventRepository(Protocol):
     async def append(self, event: SystemEvent) -> None: ...
 
@@ -205,6 +218,7 @@ class UnitOfWork(Protocol):
     kill_switch: KillSwitchRepository
     positions: PositionRepository
     equity_snapshots: EquitySnapshotRepository
+    reconciliation_lookups: ReconciliationLookupRepository
     system_events: SystemEventRepository
 
     async def __aenter__(self) -> Self: ...

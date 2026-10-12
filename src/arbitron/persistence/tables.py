@@ -340,6 +340,23 @@ class EquitySnapshotRow(Base):
     unvalued_assets: Mapped[list[str]] = mapped_column(ARRAY(Text))
 
 
+class ReconciliationLookupRow(Base):
+    """Append-only: each venue lookup of an order whose submission outcome is unknown.
+
+    The 'two consecutive not-found checks after the settle window' rule
+    (docs/failure-matrix.md) is evaluated from these rows, so it survives
+    restarts and leaves an audit trail.
+    """
+
+    __tablename__ = "reconciliation_lookups"
+    __table_args__ = (Index(None, "order_id", "checked_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    order_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("orders.id"))
+    checked_at: Mapped[datetime] = mapped_column(Timestamp)
+    found: Mapped[bool] = mapped_column(Boolean)
+
+
 # --- Paper venue -------------------------------------------------------------
 # The simulated exchange's own state, deliberately separate from the bot's
 # records (orders, fills, positions) so reconciliation compares two sources,
@@ -432,6 +449,7 @@ APPEND_ONLY_TABLES = (
     KillSwitchEventRow.__tablename__,
     SystemEventRow.__tablename__,
     EquitySnapshotRow.__tablename__,
+    ReconciliationLookupRow.__tablename__,
     PaperTradeRow.__tablename__,
     PaperFundingRow.__tablename__,
 )

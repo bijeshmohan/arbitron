@@ -10,6 +10,7 @@ from arbitron.persistence.repositories import (
     SqlKillSwitchRepository,
     SqlOrderRepository,
     SqlPositionRepository,
+    SqlReconciliationLookupRepository,
     SqlRiskDecisionRepository,
     SqlSignalRepository,
     SqlStrategyConfigRepository,
@@ -23,6 +24,7 @@ from arbitron.ports.repositories import (
     KillSwitchRepository,
     OrderRepository,
     PositionRepository,
+    ReconciliationLookupRepository,
     RiskDecisionRepository,
     SignalRepository,
     StrategyConfigRepository,
@@ -51,6 +53,9 @@ class SqlUnitOfWork:
         self.kill_switch: KillSwitchRepository = SqlKillSwitchRepository(self._session)
         self.positions: PositionRepository = SqlPositionRepository(self._session)
         self.equity_snapshots: EquitySnapshotRepository = SqlEquitySnapshotRepository(self._session)
+        self.reconciliation_lookups: ReconciliationLookupRepository = (
+            SqlReconciliationLookupRepository(self._session)
+        )
         self.system_events: SystemEventRepository = SqlSystemEventRepository(self._session)
 
     async def __aenter__(self) -> Self:

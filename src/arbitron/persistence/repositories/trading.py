@@ -31,6 +31,7 @@ from arbitron.persistence.tables import (
     FillRow,
     OrderEventRow,
     OrderRow,
+    ReconciliationLookupRow,
     RiskDecisionRow,
     SignalRow,
 )
@@ -118,6 +119,17 @@ class SqlOrderRepository:
 
     async def get(self, order_id: UUID) -> Order | None:
         row = await self._session.get(OrderRow, order_id)
+        return order_from_row(row) if row is not None else None
+
+    async def get_by_exchange_order_id(
+        self, exchange_id: str, exchange_order_id: str
+    ) -> Order | None:
+        row = await self._session.scalar(
+            select(OrderRow).where(
+                OrderRow.exchange_id == exchange_id,
+                OrderRow.exchange_order_id == exchange_order_id,
+            )
+        )
         return order_from_row(row) if row is not None else None
 
     async def get_by_client_order_id(self, exchange_id: str, client_order_id: str) -> Order | None:
@@ -244,3 +256,34 @@ def _check_event(event: OrderEvent, order: Order, *, from_status: OrderStatus | 
             f"describe order {order.id}: {from_status} -> {order.status}"
         )
         raise ValueError(msg)
+
+
+class SqlReconciliationLookupRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(self, order_id: UUID, *, checked_at: datetime, found: bool) -> None:
+        await self._session.execute(
+            insert(ReconciliationLookupRow).values(
+                order_id=order_id, checked_at=checked_at, found=found
+            )
+        )
+
+    async def not_found_since(self, order_id: UUID, since: datetime) -> int:
+        last_found = await self._session.scalar(
+            select(func.max(ReconciliationLookupRow.checked_at)).where(
+                ReconciliationLookupRow.order_id == order_id,
+                ReconciliationLookupRow.found.is_(True),
+            )
+        )
+        start = max(since, last_found) if last_found is not None else since
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(ReconciliationLookupRow)
+            .where(
+                ReconciliationLookupRow.order_id == order_id,
+                ReconciliationLookupRow.found.is_(False),
+                ReconciliationLookupRow.checked_at >= start,
+            )
+        )
+        return int(count or 0)

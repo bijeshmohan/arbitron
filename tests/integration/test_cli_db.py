@@ -164,3 +164,44 @@ def test_paper_run_refuses_other_modes(
 
     assert main(["paper", "run", str(sandbox)]) == EXIT_INVALID_CONFIG
     assert "needs app.mode = 'paper'" in capsys.readouterr().err
+
+
+def test_orders_cli_lists_and_guards_resolution(
+    database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from arbitron.cli import EXIT_INVALID_STATE  # noqa: PLC0415
+    from arbitron.clocks import ManualClock  # noqa: PLC0415
+    from arbitron.exchange import ccxt_adapter  # noqa: PLC0415
+    from tests.integration.test_market_ingestion import NOW, FakeVenue, history  # noqa: PLC0415
+    from tests.unit.test_cli import EXAMPLE_PAPER  # noqa: PLC0415
+
+    clock = ManualClock(NOW)
+    venue = FakeVenue(clock, history(200))
+
+    def fake_factory(_config: object, _clock: object) -> FakeVenue:
+        return venue
+
+    monkeypatch.setattr(ccxt_adapter, "create_market_data", fake_factory)
+    monkeypatch.setattr("arbitron.clocks.SystemClock", lambda: clock)
+    monkeypatch.setenv("ARBITRON_DATABASE_URL", database_url)
+
+    assert main(["orders", "unresolved", str(EXAMPLE_PAPER)]) == EXIT_OK
+    assert "no unresolved orders" in capsys.readouterr().out
+
+    missing = "00000000-0000-0000-0000-000000000000"
+    code = main(
+        [
+            "orders",
+            "resolve",
+            str(EXAMPLE_PAPER),
+            missing,
+            "--as",
+            "not_placed",
+            "--operator",
+            "bijesh",
+            "--note",
+            "x",
+        ]
+    )
+    assert code == EXIT_INVALID_STATE
+    assert "no order" in capsys.readouterr().err

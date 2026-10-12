@@ -66,8 +66,14 @@ class SnapshotBuilder:
         self._trading_enabled = trading_enabled
 
     async def build(
-        self, quality: Mapping[str, DataQualityReport], *, system_ready: bool
+        self,
+        quality: Mapping[str, DataQualityReport],
+        *,
+        system_ready: bool,
+        reconciliation_clean: bool = True,
     ) -> TradingSnapshot:
+        """``reconciliation_clean``: the latest reconciliation run found nothing
+        pending or discrepant. Unresolved orders also make it false."""
         tickers: dict[str, Ticker] = {}
         for symbol in self._symbols:
             tickers[symbol] = await self._market_data.fetch_ticker(symbol)
@@ -102,7 +108,8 @@ class SnapshotBuilder:
             kill_switch=kill_switch,
             trading_enabled=self._trading_enabled,
             system_ready=system_ready,
-            reconciliation_clean=not any(o.status in UNRESOLVED_STATUSES for o in open_orders),
+            reconciliation_clean=reconciliation_clean
+            and not any(o.status in UNRESOLVED_STATUSES for o in open_orders),
             exchange_healthy=True,  # tickers and balances were just fetched successfully
         )
         return await self._with_equity_history(snapshot)

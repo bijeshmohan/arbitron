@@ -14,6 +14,7 @@ from arbitron.persistence.repositories.strategy import (
 from arbitron.persistence.repositories.trading import (
     SqlFillRepository,
     SqlOrderRepository,
+    SqlReconciliationLookupRepository,
     SqlRiskDecisionRepository,
     SqlSignalRepository,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "SqlKillSwitchRepository",
     "SqlOrderRepository",
     "SqlPositionRepository",
+    "SqlReconciliationLookupRepository",
     "SqlRiskDecisionRepository",
     "SqlSignalRepository",
     "SqlStrategyConfigRepository",

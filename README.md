@@ -4,7 +4,7 @@ Autonomous spot crypto trading bot. It runs in backtest and paper modes first,
 and its design rule is **fail closed**: if it can't establish its state with
 confidence, it stops opening positions and asks for review.
 
-> **Status:** Phase 6 (paper trading) complete. Only simulated trading is possible.
+> **Status:** Phase 7 (reconciliation and recovery) complete. Only simulated trading is possible.
 > Live mode can't be selected. See [`plan.md`](plan.md) for the full
 > specification and phased roadmap.
 
@@ -146,6 +146,32 @@ uv run arbitron paper status configs/paper.toml         # balances, positions, e
   `submission_unknown` and blocks new orders until reconciliation (Phase 7).
 - Results are simulated. They aren't evidence that the strategy would make
   money.
+
+## Reconciliation and recovery
+
+The bot regularly compares its own records with the venue's. It does this at
+startup, every `execution.reconciliation_interval_seconds`, and straight after
+any ambiguous submission. `docs/failure-matrix.md` lists every failure case
+and the expected behavior, as approved by the operator.
+
+- If a submission's outcome is unknown, the bot looks the order up on the
+  venue. If the order is found, the bot applies the venue's state. If it
+  isn't, the order becomes `not_placed` only after 30 seconds and two missed
+  lookups. After 15 minutes unresolved, it escalates to the operator.
+- New orders stay blocked until reconciliation is clean.
+- Anything the bot can't safely repair (holdings that don't match its
+  position, an unknown order on the venue, contradictory fills) moves the
+  kill switch to `recovery_review`. A named operator has to review and re-arm
+  it.
+
+```bash
+uv run arbitron orders unresolved configs/paper.toml
+uv run arbitron orders resolve configs/paper.toml ORDER_ID --as not_placed \
+    --operator NAME --note "evidence"
+```
+
+`orders resolve` only closes an order as unfilled. It refuses if the venue
+has any record of the order: fills only ever come from venue data.
 
 ## Development
 

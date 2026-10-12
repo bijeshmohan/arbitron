@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from arbitron.domain.risk import KillSwitch
     from arbitron.domain.signals import Signal
     from arbitron.exchange.ccxt_adapter import CcxtMarketData
+    from arbitron.execution.reconciler import ReconciliationReport
     from arbitron.market.service import CycleOutcome
     from arbitron.ports.clock import Clock
     from arbitron.ports.errors import VenueError
@@ -293,6 +294,19 @@ def _print_market(outcome: "CycleOutcome", timeframe: str) -> None:
             print(f"  {marker} {issue.code.value}: {issue.detail}")
 
 
+def _print_reconciliation(report: "ReconciliationReport", *, label: str) -> None:
+    status = "clean" if report.clean else "NOT CLEAN (new orders blocked)"
+    print(f"  {label}: {status}")
+    for line in report.resolved:
+        print(f"    resolved: {line}")
+    for line in report.repairs:
+        print(f"    repaired: {line}")
+    for line in report.pending:
+        print(f"    ~ pending: {line}")
+    for line in report.discrepancies:
+        print(f"    ! discrepancy: {line}")
+
+
 def _d(value: "Decimal") -> str:
     from arbitron.domain.money import canonical_str  # noqa: PLC0415
 
@@ -509,11 +523,15 @@ async def _paper_run(args: argparse.Namespace) -> int:
                 uow_factory=rt.uow_factory,
                 clock=rt.clock,
             )
-            if await session.start():
+            startup = await session.start()
+            if startup.funded:
                 print(
                     f"paper account {config.paper.account!r} funded with "
                     f"{config.paper.starting_balance} {config.exchange.quote_currency}"
                 )
+            if startup.recovered:
+                print(f"  ! {startup.recovered} order(s) were interrupted mid-submission")
+            _print_reconciliation(startup.reconciliation, label="startup reconciliation")
 
             def report(outcome: SessionOutcome) -> None:
                 _print_market(outcome.pipeline.market, config.strategy.timeframe)
@@ -530,6 +548,8 @@ async def _paper_run(args: argparse.Namespace) -> int:
                     print(f"  order: {order.action.value} status={status} {order.detail}")
                 for reason in outcome.skipped_signals:
                     print(f"  ~ signal not traded: {reason}")
+                if outcome.reconciliation is not None:
+                    _print_reconciliation(outcome.reconciliation, label="reconciliation")
                 sys.stdout.flush()
 
             async def checked_cycle() -> SessionOutcome:
@@ -627,7 +647,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subcommands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
-    for add in (_add_check, _add_db, _add_market, _add_strategy, _add_kill_switch, _add_paper):
+    for add in (
+        _add_check,
+        _add_db,
+        _add_market,
+        _add_strategy,
+        _add_kill_switch,
+        _add_paper,
+        _add_orders,
+    ):
         add(subcommands)
     return parser
 
@@ -715,6 +743,104 @@ def _add_kill_switch(subcommands: "_Subcommands") -> None:
     arm.add_argument("--operator", required=True, help="named operator taking responsibility")
     arm.add_argument("--ack", required=True, help="what was reviewed and why it is safe")
     arm.set_defaults(handler=_kill_switch)
+
+
+async def _orders(args: argparse.Namespace) -> int:
+    from uuid import UUID  # noqa: PLC0415
+
+    from arbitron.application.order_resolution import (  # noqa: PLC0415
+        ResolutionRefusedError,
+        resolve_order,
+    )
+    from arbitron.application.paper_session import PaperSession  # noqa: PLC0415
+    from arbitron.domain.enums import OrderStatus  # noqa: PLC0415
+    from arbitron.persistence.db import create_engine, create_session_factory  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    strategy = _require_strategy(config)
+    async with _runtime(config, venue=True) as rt:
+        assert rt.market_data is not None  # noqa: S101 - venue=True
+        if args.orders_command == "unresolved":
+            async with rt.uow_factory() as tx:
+                pending = [
+                    o
+                    for o in await tx.orders.list_non_terminal(config.exchange.id)
+                    if o.status
+                    in (OrderStatus.SUBMISSION_UNKNOWN, OrderStatus.RECONCILIATION_REQUIRED)
+                ]
+            for order in pending:
+                intent = order.intent
+                print(
+                    f"{order.id} {order.status.value} {intent.side.value} {_d(intent.amount)} "
+                    f"{intent.symbol} client={intent.client_order_id} "
+                    f"since={order.updated_at.isoformat()}"
+                )
+            if not pending:
+                print("no unresolved orders")
+            return EXIT_OK
+
+        url = _database_url()
+        assert url is not None  # noqa: S101 - _runtime checked it
+        engine = create_engine(url, pool_size=1)
+        try:
+            session = PaperSession(
+                config,
+                strategy=strategy,
+                market_data=rt.market_data,
+                session_factory=create_session_factory(engine),
+                uow_factory=rt.uow_factory,
+                clock=rt.clock,
+            )
+            async with rt.uow_factory() as tx:
+                order = await tx.orders.get(UUID(args.order_id))
+            if order is None:
+                print(f"error: no order {args.order_id}", file=sys.stderr)
+                return EXIT_INVALID_STATE
+            try:
+                resolved = await resolve_order(
+                    order=order,
+                    outcome=OrderStatus(args.outcome),
+                    operator=args.operator,
+                    note=args.note,
+                    execution=session.broker,
+                    uow_factory=rt.uow_factory,
+                    clock=rt.clock,
+                )
+            except ResolutionRefusedError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return EXIT_INVALID_STATE
+        finally:
+            await engine.dispose()
+        print(f"order {resolved.id} resolved as {resolved.status.value} by {args.operator}")
+        print(
+            "  new orders stay blocked until reconciliation is clean and the kill switch is armed"
+        )
+    return EXIT_OK
+
+
+def _add_orders(subcommands: "_Subcommands") -> None:
+    orders = subcommands.add_parser("orders", help="inspect and resolve orders (operator)")
+    commands = orders.add_subparsers(dest="orders_command", required=True, metavar="ORDERS_COMMAND")
+    unresolved = commands.add_parser(
+        "unresolved", help="orders awaiting reconciliation or an operator decision"
+    )
+    unresolved.add_argument("config", type=Path, help="path to a TOML config file")
+    unresolved.set_defaults(handler=_orders)
+    resolve = commands.add_parser(
+        "resolve",
+        help="close an unresolved order as unfilled after checking the venue has no record",
+    )
+    resolve.add_argument("config", type=Path, help="path to a TOML config file")
+    resolve.add_argument("order_id", help="internal order id (from `orders unresolved`)")
+    resolve.add_argument(
+        "--as",
+        dest="outcome",
+        required=True,
+        choices=["not_placed", "canceled", "expired", "exchange_rejected"],
+    )
+    resolve.add_argument("--operator", required=True, help="named operator (audit trail)")
+    resolve.add_argument("--note", required=True, help="evidence for the resolution")
+    resolve.set_defaults(handler=_orders)
 
 
 def _add_paper(subcommands: "_Subcommands") -> None:

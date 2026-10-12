@@ -55,6 +55,10 @@ assumed_fee_pct = "0.1"
 allow_market_orders = false
 submission_timeout_seconds = 15
 reconciliation_interval_seconds = 60
+# Unknown submissions: NOT_PLACED only after the settle window and two
+# not-found lookups; escalate to the operator after the max age.
+unknown_order_settle_seconds = 30
+unknown_order_max_age_seconds = 900
 
 # Optional; these are the defaults.
 [market]

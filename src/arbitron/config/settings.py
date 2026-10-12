@@ -207,6 +207,12 @@ class ExecutionSection(_Section):
     allow_market_orders: bool
     submission_timeout_seconds: int = Field(gt=0)
     reconciliation_interval_seconds: int = Field(gt=0)
+    # docs/failure-matrix.md (operator-approved 2026-10-12): an unknown
+    # submission becomes NOT_PLACED only after this settle window and two
+    # consecutive not-found lookups; unresolved past the max age, it
+    # escalates to the operator.
+    unknown_order_settle_seconds: int = Field(default=30, ge=0, le=3600)
+    unknown_order_max_age_seconds: int = Field(default=900, ge=60, le=86_400)
 
 
 class MarketSection(_Section):

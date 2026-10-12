@@ -289,7 +289,7 @@ arbitron/
 │       ├── execution/
 │       │   ├── order_manager.py    # signal -> intent -> risk -> submit -> fills
 │       │   ├── freshness.py        # which signals may be traded
-│       │   └── reconciler.py       # Phase 7
+│       │   └── reconciler.py       # venue vs local records (docs/failure-matrix.md)
 │       ├── portfolio/              # stdlib + domain imports only (tested)
 │       │   └── accounting.py       # weighted average cost from fills
 │       ├── simulation/             # stdlib + domain imports only (tested)
@@ -315,7 +315,8 @@ arbitron/
 │       │   ├── risk_gate.py        # persist decision + order transition
 │       │   ├── kill_switch.py      # operator kill-switch service
 │       │   ├── snapshot_builder.py # TradingSnapshot + equity history
-│       │   ├── paper_session.py    # full paper loop per candle close
+│       │   ├── paper_session.py    # startup recovery + full paper loop per candle
+│       │   ├── order_resolution.py # audited operator resolution (zero-fill only)
 │       │   ├── engine.py
 │       │   ├── supervisor.py
 │       │   └── lifecycle.py
@@ -340,6 +341,7 @@ arbitron/
 │   ├── seed_paper_account.py
 │   └── verify_config.py
 ├── docs/
+│   ├── failure-matrix.md       # operator-approved failure behavior (Phase 7)
 │   └── runbooks/
 └── deploy/
     ├── Dockerfile
@@ -1005,6 +1007,19 @@ Reconciliation is a core subsystem, not a maintenance script.
 10. Enable paper operation automatically if healthy; live enablement
     requires configured policy and successful safety gates.
 
+Implemented (Phase 7) in `PaperSession.start()`, which `paper run` calls
+after loading config, taking the instance lock, and verifying the schema:
+1. initialize the kill switch;
+2. fund the paper account if new;
+3. load market metadata;
+4. mark orders found in `SUBMITTING` as `SUBMISSION_UNKNOWN`;
+5. run a full reconciliation.
+
+New orders are possible only after that run, and only while reconciliation
+stays clean (the snapshot's `reconciliation_clean`). The rules, timings and
+expected behavior per failure are in `docs/failure-matrix.md`, approved by
+the operator on 2026-10-12.
+
 ### 14.2 Periodic reconciliation
 
 Run on a configurable interval and after order submission/cancellation
@@ -1029,6 +1044,16 @@ operator, - require explicit resolution.
 
 Never create a compensating trade merely to make local state match a
 database target.
+
+Implemented automatic repairs are limited to two:
+- applying a verified venue state to an unknown or unresolved order;
+- inserting a verified missing fill for a known order, within its
+  venue-reported fill.
+
+Discrepancies record critical events and move an armed kill switch to
+`RECOVERY_REVIEW`. Operators resolve stuck orders with
+`arbitron orders resolve`. That command allows zero-fill outcomes only, and
+refuses if the venue has any record of the order or local fills exist.
 
 ------------------------------------------------------------------------
 
@@ -1445,15 +1470,15 @@ intents.
 
 ### Phase 7 --- Reconciliation and recovery
 
--   [ ] Write and review `docs/failure-matrix.md` (§21.4) before
+-   [x] Write and review `docs/failure-matrix.md` (§21.4) before
     implementing failure-injection tests.
--   [ ] Implement exchange snapshot fetches and normalized
+-   [x] Implement exchange snapshot fetches and normalized
     reconciliation.
--   [ ] Implement startup recovery sequence.
--   [ ] Implement periodic reconciliation and overlap/dedupe for fills.
--   [ ] Add `SUBMISSION_UNKNOWN` handling.
--   [ ] Add discrepancy classification and recovery-review state.
--   [ ] Add failure-injection tests for ambiguous outcomes.
+-   [x] Implement startup recovery sequence.
+-   [x] Implement periodic reconciliation and overlap/dedupe for fills.
+-   [x] Add `SUBMISSION_UNKNOWN` handling.
+-   [x] Add discrepancy classification and recovery-review state.
+-   [x] Add failure-injection tests for ambiguous outcomes.
 
 **Acceptance:** restart with open orders and partial fills recovers
 safely; unresolved discrepancies block new orders and raise critical
