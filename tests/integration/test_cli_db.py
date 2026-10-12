@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from arbitron.cli import EXIT_OK, main
@@ -116,3 +118,49 @@ def test_killswitch_cli_lifecycle(
     capsys.readouterr()
     assert main(["killswitch", "arm", "--operator", "system", "--ack", "x"]) == EXIT_INVALID_STATE
     assert "named operator" in capsys.readouterr().err
+
+
+def test_paper_run_and_status_end_to_end(
+    database_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from arbitron.clocks import ManualClock  # noqa: PLC0415
+    from arbitron.exchange import ccxt_adapter  # noqa: PLC0415
+    from tests.integration.test_market_ingestion import NOW, FakeVenue, history  # noqa: PLC0415
+    from tests.unit.test_cli import EXAMPLE_PAPER  # noqa: PLC0415
+
+    clock = ManualClock(NOW)
+    venue = FakeVenue(clock, history(200))
+
+    def fake_factory(_config: object, _clock: object) -> FakeVenue:
+        return venue
+
+    monkeypatch.setattr(ccxt_adapter, "create_market_data", fake_factory)
+    monkeypatch.setattr("arbitron.clocks.SystemClock", lambda: clock)
+    monkeypatch.setenv("ARBITRON_DATABASE_URL", database_url)
+
+    assert main(["paper", "run", str(EXAMPLE_PAPER)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "funded with 1000 USDT" in out
+    assert "equity: 1000 USDT" in out
+
+    assert main(["paper", "status", str(EXAMPLE_PAPER)]) == EXIT_OK
+    status = capsys.readouterr().out
+    assert "balance USDT: total=1000" in status
+    assert "kill switch: recovery_review" in status
+
+
+def test_paper_run_refuses_other_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from arbitron.cli import EXIT_INVALID_CONFIG  # noqa: PLC0415
+    from tests.unit.test_cli import EXAMPLE_PAPER  # noqa: PLC0415
+
+    sandbox = tmp_path / "sandbox.toml"
+    sandbox.write_text(
+        EXAMPLE_PAPER.read_text()
+        .replace('mode = "paper"', 'mode = "sandbox"')
+        .replace("sandbox = false", "sandbox = true")
+    )
+
+    assert main(["paper", "run", str(sandbox)]) == EXIT_INVALID_CONFIG
+    assert "needs app.mode = 'paper'" in capsys.readouterr().err

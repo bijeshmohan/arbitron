@@ -59,3 +59,25 @@ class PortfolioView:
     def position_quantity(self, symbol: str) -> Decimal:
         position = self.positions.get(symbol)
         return position.quantity if position is not None else Decimal(0)
+
+
+@dataclass(frozen=True, slots=True)
+class EquitySnapshot:
+    """Portfolio equity at one instant, valued per plan §11.1.1 (last closed candles).
+
+    The source of the daily-loss baseline (first snapshot of the UTC day) and
+    the drawdown high-water mark (highest snapshot).
+    """
+
+    taken_at: datetime
+    quote_currency: str
+    equity: Decimal
+    # asset -> quote value, as exact decimal strings
+    components: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    unvalued_assets: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        require_utc("taken_at", self.taken_at)
+        require_text("quote_currency", self.quote_currency)
+        require_non_negative("equity", self.equity)
+        object.__setattr__(self, "components", MappingProxyType(dict(self.components)))

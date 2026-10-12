@@ -5,9 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from arbitron.persistence.repositories import (
     SqlCandleRepository,
+    SqlEquitySnapshotRepository,
     SqlFillRepository,
     SqlKillSwitchRepository,
     SqlOrderRepository,
+    SqlPositionRepository,
     SqlRiskDecisionRepository,
     SqlSignalRepository,
     SqlStrategyConfigRepository,
@@ -16,9 +18,11 @@ from arbitron.persistence.repositories import (
 )
 from arbitron.ports.repositories import (
     CandleRepository,
+    EquitySnapshotRepository,
     FillRepository,
     KillSwitchRepository,
     OrderRepository,
+    PositionRepository,
     RiskDecisionRepository,
     SignalRepository,
     StrategyConfigRepository,
@@ -45,6 +49,8 @@ class SqlUnitOfWork:
         self.fills: FillRepository = SqlFillRepository(self._session)
         self.risk_decisions: RiskDecisionRepository = SqlRiskDecisionRepository(self._session)
         self.kill_switch: KillSwitchRepository = SqlKillSwitchRepository(self._session)
+        self.positions: PositionRepository = SqlPositionRepository(self._session)
+        self.equity_snapshots: EquitySnapshotRepository = SqlEquitySnapshotRepository(self._session)
         self.system_events: SystemEventRepository = SqlSystemEventRepository(self._session)
 
     async def __aenter__(self) -> Self:

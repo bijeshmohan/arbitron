@@ -6,10 +6,11 @@ report is ``ok`` (Phases 4-5 enforce this; risk maps it to
 ``RiskReason.MARKET_DATA_STALE``).
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from types import MappingProxyType
 
 from arbitron.domain.enums import Severity
 from arbitron.domain.market import Candle, Market, Timeframe
@@ -174,6 +175,11 @@ class MarketDataMonitor:
     @property
     def clock_offset(self) -> timedelta | None:
         return self._clock_offset
+
+    @property
+    def markets(self) -> Mapping[str, Market]:
+        """Market metadata from the last successful refresh (empty before the first)."""
+        return MappingProxyType(self._markets)
 
     async def evaluate(self, symbol: str, *, lookback: int) -> DataQualityReport:
         if lookback < 1:

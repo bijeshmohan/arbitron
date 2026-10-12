@@ -43,6 +43,8 @@ _CHECK = textwrap.dedent(
         # Sizing and risk are pure decisions over a snapshot: no I/O of any kind.
         ("arbitron.sizing", ("arbitron.sizing", "arbitron.domain")),
         ("arbitron.risk", ("arbitron.risk", "arbitron.domain")),
+        ("arbitron.portfolio", ("arbitron.portfolio", "arbitron.domain")),
+        ("arbitron.simulation", ("arbitron.simulation", "arbitron.domain")),
     ],
 )
 def test_package_imports_only_stdlib_and_allowed_internals(

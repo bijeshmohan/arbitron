@@ -66,6 +66,15 @@ max_clock_skew_ms = 1000
 request_concurrency = 2
 read_retry_attempts = 3
 
+# Paper venue simulation (paper mode only). These are the defaults.
+# Fills: best ask/bid moved against the order by slippage_bps, never past the
+# limit (IOC orders that would breach it expire). Fees in the received asset.
+[paper]
+account = "default"
+starting_balance = "1000"
+slippage_bps = "5"
+fee_pct = "0.1"
+
 [live]
 enabled = false
 acknowledgement = false

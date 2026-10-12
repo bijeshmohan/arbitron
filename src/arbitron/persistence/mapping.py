@@ -15,15 +15,19 @@ from arbitron.domain.events import OrderEvent, SystemEvent
 from arbitron.domain.fills import ExchangeTrade, Fee, Fill
 from arbitron.domain.market import Candle, Timeframe
 from arbitron.domain.orders import Order, OrderIntent
+from arbitron.domain.portfolio import EquitySnapshot
+from arbitron.domain.positions import Position
 from arbitron.domain.risk import KillSwitch, RiskDecision, RiskReason
 from arbitron.domain.signals import Signal
 from arbitron.domain.strategies import StrategyConfig, StrategyCursor
 from arbitron.persistence.tables import (
     CandleRow,
+    EquitySnapshotRow,
     FillRow,
     KillSwitchRow,
     OrderEventRow,
     OrderRow,
+    PositionRow,
     RiskDecisionRow,
     SignalRow,
     StrategyConfigRow,
@@ -288,6 +292,50 @@ def system_event_from_row(row: SystemEventRow) -> SystemEvent:
         occurred_at=row.occurred_at,
         correlation_id=row.correlation_id,
         payload=row.payload,
+    )
+
+
+def position_values(position: Position) -> dict[str, Any]:
+    return {
+        "exchange_id": position.exchange_id,
+        "symbol": position.symbol,
+        "quantity": position.quantity,
+        "average_cost": position.average_cost,
+        "realized_pnl": position.realized_pnl,
+        "fees_paid": position.fees_paid,
+        "updated_at": position.updated_at,
+    }
+
+
+def position_from_row(row: PositionRow) -> Position:
+    return Position(
+        exchange_id=row.exchange_id,
+        symbol=row.symbol,
+        quantity=row.quantity,
+        average_cost=row.average_cost,
+        realized_pnl=row.realized_pnl,
+        updated_at=row.updated_at,
+        fees_paid=row.fees_paid,
+    )
+
+
+def equity_snapshot_values(snapshot: EquitySnapshot) -> dict[str, Any]:
+    return {
+        "taken_at": snapshot.taken_at,
+        "quote_currency": snapshot.quote_currency,
+        "equity": snapshot.equity,
+        "components": dict(snapshot.components),
+        "unvalued_assets": list(snapshot.unvalued_assets),
+    }
+
+
+def equity_snapshot_from_row(row: EquitySnapshotRow) -> EquitySnapshot:
+    return EquitySnapshot(
+        taken_at=row.taken_at,
+        quote_currency=row.quote_currency,
+        equity=row.equity,
+        components=row.components,
+        unvalued_assets=tuple(row.unvalued_assets),
     )
 
 

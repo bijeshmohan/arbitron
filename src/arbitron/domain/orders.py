@@ -142,6 +142,15 @@ _PARTIAL_FILL: Final = frozenset({S.PARTIALLY_FILLED, S.PARTIALLY_FILLED_CLOSED}
 _PRE_SUBMISSION: Final = frozenset({S.CREATED, S.RISK_APPROVED, S.RISK_REJECTED, S.SUBMITTING})
 
 
+def intent_id_for(signal_id: UUID, attempt: int = 1) -> UUID:
+    """The intent ID a signal's ``attempt`` will have, computable before sizing.
+
+    Lets callers check whether a signal was already acted on without
+    re-sizing it (prices move, so a re-sized intent would differ).
+    """
+    return deterministic_id("order_intent", f"{signal_id}:{attempt}")
+
+
 def can_transition(current: OrderStatus, target: OrderStatus) -> bool:
     return target in ALLOWED_TRANSITIONS[current]
 
@@ -197,7 +206,7 @@ class OrderIntent:
 
     @property
     def id(self) -> UUID:
-        return deterministic_id("order_intent", self.dedupe_key)
+        return intent_id_for(self.signal_id, self.attempt)
 
     @property
     def client_order_id(self) -> str:

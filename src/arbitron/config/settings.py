@@ -225,6 +225,20 @@ class MarketSection(_Section):
     read_retry_attempts: int = Field(default=3, ge=1, le=10)
 
 
+class PaperSection(_Section):
+    """Paper venue simulation (operator decisions 2026-10-12). Used only in paper mode.
+
+    - ``starting_balance``: quote funded once when the paper account is created.
+    - ``slippage_bps``: fill price = best ask/bid moved against the order.
+    - ``fee_pct``: charged in the received asset, like Binance spot.
+    """
+
+    account: str = Field(default="default", min_length=1, pattern=r"^[a-z0-9_-]+$")
+    starting_balance: PositiveDecimal = Decimal(1000)
+    slippage_bps: NonNegativeDecimal = Field(default=Decimal(5), le=500)
+    fee_pct: NonNegativeDecimal = Field(default=Decimal("0.1"), le=5)
+
+
 class LiveSection(_Section):
     enabled: bool = False
     acknowledgement: bool = False
@@ -238,6 +252,7 @@ class ArbitronConfig(_Section):
     sizing: SizingSection
     execution: ExecutionSection
     market: MarketSection = MarketSection()
+    paper: PaperSection = PaperSection()
     live: LiveSection = LiveSection()
 
     @model_validator(mode="after")

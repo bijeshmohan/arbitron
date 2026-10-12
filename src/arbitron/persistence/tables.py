@@ -4,8 +4,8 @@ Row classes are persistence-only; repositories map them to and from domain
 objects. Enumerations are stored as text guarded by CHECK constraints (easier
 to evolve than PostgreSQL enum types). Financial values use NUMERIC(38, 18).
 
-Tables for later phases (markets, balances, positions, snapshots, bot
-instances, strategy runs, heartbeats, risk events) are added by the
+Tables for later phases (markets, balance snapshots, bot instances,
+strategy runs, heartbeats, risk events) are added by the
 migrations of the phase that first uses them.
 """
 
@@ -303,6 +303,126 @@ class SystemEventRow(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
 
+class PositionRow(Base):
+    """Position projection from fills (weighted average cost)."""
+
+    __tablename__ = "positions"
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="non_negative_quantity"),
+        CheckConstraint("average_cost >= 0", name="non_negative_average_cost"),
+        CheckConstraint("fees_paid >= 0", name="non_negative_fees"),
+        CheckConstraint("quantity > 0 OR average_cost = 0", name="flat_has_no_cost"),
+    )
+
+    exchange_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    quantity: Mapped[Decimal] = mapped_column(Money)
+    average_cost: Mapped[Decimal] = mapped_column(Money)
+    realized_pnl: Mapped[Decimal] = mapped_column(Money)
+    fees_paid: Mapped[Decimal] = mapped_column(Money)
+    updated_at: Mapped[datetime] = mapped_column(Timestamp)
+
+
+class EquitySnapshotRow(Base):
+    """Append-only equity history: daily-loss baseline and drawdown high-water mark."""
+
+    __tablename__ = "equity_snapshots"
+    __table_args__ = (
+        CheckConstraint("equity >= 0", name="non_negative_equity"),
+        Index(None, "quote_currency", "taken_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    taken_at: Mapped[datetime] = mapped_column(Timestamp)
+    quote_currency: Mapped[str] = mapped_column(Text)
+    equity: Mapped[Decimal] = mapped_column(Money)
+    components: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    unvalued_assets: Mapped[list[str]] = mapped_column(ARRAY(Text))
+
+
+# --- Paper venue -------------------------------------------------------------
+# The simulated exchange's own state, deliberately separate from the bot's
+# records (orders, fills, positions) so reconciliation compares two sources,
+# exactly as it will against a real venue.
+
+
+class PaperAccountRow(Base):
+    __tablename__ = "paper_accounts"
+
+    account: Mapped[str] = mapped_column(Text, primary_key=True)
+    quote_currency: Mapped[str] = mapped_column(Text)
+    starting_balance: Mapped[Decimal] = mapped_column(Money)
+    created_at: Mapped[datetime] = mapped_column(Timestamp)
+
+
+class PaperBalanceRow(Base):
+    __tablename__ = "paper_balances"
+    __table_args__ = (CheckConstraint("free >= 0 AND used >= 0", name="non_negative"),)
+
+    account: Mapped[str] = mapped_column(
+        Text, ForeignKey("paper_accounts.account"), primary_key=True
+    )
+    asset: Mapped[str] = mapped_column(Text, primary_key=True)
+    free: Mapped[Decimal] = mapped_column(Money)
+    used: Mapped[Decimal] = mapped_column(Money)
+
+
+class PaperOrderRow(Base):
+    __tablename__ = "paper_orders"
+    __table_args__ = (
+        UniqueConstraint("account", "client_order_id"),
+        CheckConstraint("filled >= 0 AND filled <= amount", name="filled_range"),
+    )
+
+    venue_order_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    account: Mapped[str] = mapped_column(Text, ForeignKey("paper_accounts.account"))
+    client_order_id: Mapped[str] = mapped_column(Text)
+    symbol: Mapped[str] = mapped_column(Text)
+    side: Mapped[str] = mapped_column(Text)
+    order_type: Mapped[str] = mapped_column(Text)
+    time_in_force: Mapped[str | None] = mapped_column(Text)
+    amount: Mapped[Decimal] = mapped_column(Money)
+    limit_price: Mapped[Decimal | None] = mapped_column(Money)
+    raw_status: Mapped[str] = mapped_column(Text)
+    filled: Mapped[Decimal] = mapped_column(Money)
+    average_price: Mapped[Decimal | None] = mapped_column(Money)
+    fee: Mapped[Decimal] = mapped_column(Money)
+    fee_currency: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(Timestamp)
+    updated_at: Mapped[datetime] = mapped_column(Timestamp)
+
+
+class PaperTradeRow(Base):
+    """Append-only (UPDATE/DELETE blocked by trigger)."""
+
+    __tablename__ = "paper_trades"
+    __table_args__ = (Index(None, "account", "symbol", "timestamp"),)
+
+    trade_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    venue_order_id: Mapped[str] = mapped_column(Text, ForeignKey("paper_orders.venue_order_id"))
+    account: Mapped[str] = mapped_column(Text, ForeignKey("paper_accounts.account"))
+    symbol: Mapped[str] = mapped_column(Text)
+    side: Mapped[str] = mapped_column(Text)
+    amount: Mapped[Decimal] = mapped_column(Money)
+    price: Mapped[Decimal] = mapped_column(Money)
+    fee: Mapped[Decimal] = mapped_column(Money)
+    fee_currency: Mapped[str] = mapped_column(Text)
+    timestamp: Mapped[datetime] = mapped_column(Timestamp)
+
+
+class PaperFundingRow(Base):
+    """Append-only deposits into a paper account (not trading P&L)."""
+
+    __tablename__ = "paper_funding"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    account: Mapped[str] = mapped_column(Text, ForeignKey("paper_accounts.account"))
+    asset: Mapped[str] = mapped_column(Text)
+    amount: Mapped[Decimal] = mapped_column(Money)
+    timestamp: Mapped[datetime] = mapped_column(Timestamp)
+    note: Mapped[str] = mapped_column(Text)
+
+
 APPEND_ONLY_TABLES = (
     StrategyConfigRow.__tablename__,
     SignalRow.__tablename__,
@@ -311,4 +431,7 @@ APPEND_ONLY_TABLES = (
     RiskDecisionRow.__tablename__,
     KillSwitchEventRow.__tablename__,
     SystemEventRow.__tablename__,
+    EquitySnapshotRow.__tablename__,
+    PaperTradeRow.__tablename__,
+    PaperFundingRow.__tablename__,
 )

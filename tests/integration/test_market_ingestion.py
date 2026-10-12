@@ -48,6 +48,8 @@ class FakeVenue:
         self.fail_next: list[Exception] = []
         self.market = MARKET
         self.time_offset = timedelta(0)
+        self.ticker: Ticker | None = None  # overrides the default touch
+        self.ticker_failures: list[Exception] = []
 
     async def load_markets(self) -> Mapping[str, Market]:
         return {SYMBOL: self.market}
@@ -71,7 +73,14 @@ class FakeVenue:
         return [replace(c, is_closed=c.close_time <= now, ingested_at=now) for c in visible]
 
     async def fetch_ticker(self, symbol: str) -> Ticker:
-        raise NotImplementedError
+        """Default touch: bid at the latest visible close, ask one tick above."""
+        if self.ticker_failures:
+            raise self.ticker_failures.pop(0)
+        if self.ticker is not None:
+            return replace(self.ticker, timestamp=self.clock.now())
+        now = self.clock.now()
+        last = [c for c in self.history if c.close_time <= now][-1]
+        return Ticker("binance", symbol, last.close, last.close + Decimal("0.01"), last.close, now)
 
     async def fetch_time(self) -> datetime:
         return self.clock.now() + self.time_offset

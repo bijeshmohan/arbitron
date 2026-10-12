@@ -21,10 +21,12 @@ from arbitron.config import ArbitronConfig, Secrets, load_config
 
 if TYPE_CHECKING:
     from datetime import datetime
+    from decimal import Decimal
 
     from sqlalchemy.ext.asyncio import AsyncEngine
 
     from arbitron.application.kill_switch import KillSwitchService
+    from arbitron.application.paper_session import PaperSession, SessionOutcome
     from arbitron.domain.risk import KillSwitch
     from arbitron.domain.signals import Signal
     from arbitron.exchange.ccxt_adapter import CcxtMarketData
@@ -33,6 +35,9 @@ if TYPE_CHECKING:
     from arbitron.ports.errors import VenueError
     from arbitron.ports.repositories import UnitOfWork
     from arbitron.strategy.base import Strategy
+
+# argparse exposes no public type for the object add_subparsers() returns.
+type _Subcommands = argparse._SubParsersAction[argparse.ArgumentParser]  # pyright: ignore[reportPrivateUsage]
 
 EXIT_OK = 0
 EXIT_INVALID_CONFIG = 1
@@ -288,6 +293,12 @@ def _print_market(outcome: "CycleOutcome", timeframe: str) -> None:
             print(f"  {marker} {issue.code.value}: {issue.detail}")
 
 
+def _d(value: "Decimal") -> str:
+    from arbitron.domain.money import canonical_str  # noqa: PLC0415
+
+    return canonical_str(value)
+
+
 def _print_signal(signal: "Signal") -> None:
     print(
         f"  signal {signal.side.value.upper()} {signal.symbol} "
@@ -464,6 +475,150 @@ async def _kill_switch(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+async def _paper_run(args: argparse.Namespace) -> int:
+    from arbitron.application.paper_session import PaperSession, SessionOutcome  # noqa: PLC0415
+    from arbitron.config.settings import Mode  # noqa: PLC0415
+    from arbitron.persistence.db import create_engine, create_session_factory  # noqa: PLC0415
+    from arbitron.persistence.lock import InstanceLock, LockNotAcquiredError  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    if config.app.mode is not Mode.PAPER:
+        print(f"error: paper run needs app.mode = 'paper', got {config.app.mode}", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    strategy = _require_strategy(config)
+    async with _runtime(config, venue=True) as rt:
+        assert rt.market_data is not None  # noqa: S101 - venue=True
+        url = _database_url()
+        assert url is not None  # noqa: S101 - _runtime checked it
+        lock_engine = create_engine(url, pool_size=1)
+        lock = InstanceLock(
+            lock_engine, exchange_id=config.exchange.id, account=config.paper.account, mode="paper"
+        )
+        try:
+            await lock.acquire()
+        except LockNotAcquiredError:
+            await lock_engine.dispose()
+            print("error: another paper session holds this account's lock", file=sys.stderr)
+            return EXIT_INVALID_STATE
+        try:
+            session = PaperSession(
+                config,
+                strategy=strategy,
+                market_data=rt.market_data,
+                session_factory=create_session_factory(lock_engine),
+                uow_factory=rt.uow_factory,
+                clock=rt.clock,
+            )
+            if await session.start():
+                print(
+                    f"paper account {config.paper.account!r} funded with "
+                    f"{config.paper.starting_balance} {config.exchange.quote_currency}"
+                )
+
+            def report(outcome: SessionOutcome) -> None:
+                _print_market(outcome.pipeline.market, config.strategy.timeframe)
+                for run in outcome.pipeline.runs:
+                    for signal in run.signals:
+                        _print_signal(signal)
+                if outcome.equity is not None:
+                    print(f"  equity: {_d(outcome.equity)} {config.exchange.quote_currency}")
+                if outcome.tripped:
+                    reasons = ", ".join(r.value for r in outcome.tripped)
+                    print(f"  ! KILL SWITCH TRIPPED: {reasons}")
+                for order in outcome.orders:
+                    status = order.order.status.value if order.order else "-"
+                    print(f"  order: {order.action.value} status={status} {order.detail}")
+                for reason in outcome.skipped_signals:
+                    print(f"  ~ signal not traded: {reason}")
+                sys.stdout.flush()
+
+            async def checked_cycle() -> SessionOutcome:
+                await lock.check()
+                return await session.run_cycle()
+
+            return await _run_cycles(
+                follow=args.follow,
+                once=checked_cycle,
+                forever=lambda on_cycle, on_error, stop: follow_with(
+                    checked_cycle, session, on_cycle, on_error, stop
+                ),
+                report=report,
+                ok=lambda outcome: outcome.pipeline.market.ok,
+            )
+        finally:
+            await lock.release()
+            await lock_engine.dispose()
+
+
+async def follow_with(
+    cycle: "Callable[[], Awaitable[SessionOutcome]]",
+    session: "PaperSession",
+    on_cycle: "Callable[[SessionOutcome], None]",
+    on_error: "Callable[[VenueError], None]",
+    stop: asyncio.Event,
+) -> None:
+    from arbitron.market.service import follow_closes  # noqa: PLC0415
+
+    await follow_closes(
+        cycle, on_cycle, on_error, stop=stop, wait=session.market.seconds_until_next_close
+    )
+
+
+async def _paper_status(args: argparse.Namespace) -> int:
+    from arbitron.paper.broker import paper_balances  # noqa: PLC0415
+    from arbitron.persistence.db import create_engine, create_session_factory  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    quote = config.exchange.quote_currency
+    async with _runtime(config, venue=False) as rt:
+        url = _database_url()
+        assert url is not None  # noqa: S101 - _runtime checked it
+        engine = create_engine(url, pool_size=1)
+        try:
+            balances = await paper_balances(
+                create_session_factory(engine), config.paper.account, observed_at=rt.clock.now()
+            )
+        finally:
+            await engine.dispose()
+        print(f"paper account {config.paper.account!r} (simulated; not a real account)")
+        if not balances:
+            print("  not funded yet: run `arbitron paper run` to create it")
+        for asset, bal in sorted(balances.items()):
+            print(
+                f"  balance {asset}: total={_d(bal.total)} free={_d(bal.free)} used={_d(bal.used)}"
+            )
+        async with rt.uow_factory() as tx:
+            positions = await tx.positions.list(config.exchange.id)
+            equity = await tx.equity_snapshots.latest(quote)
+            peak = await tx.equity_snapshots.peak(quote)
+            recent = await tx.orders.list_recent(config.exchange.id, args.orders)
+            kill_switch = await tx.kill_switch.get()
+        for position in positions:
+            print(
+                f"  position {position.symbol}: qty={_d(position.quantity)} "
+                f"avg_cost={_d(position.average_cost)} "
+                f"realized_pnl={_d(position.realized_pnl)} fees={_d(position.fees_paid)} {quote}"
+            )
+        if equity is not None:
+            peak_text = _d(peak) if peak is not None else "-"
+            print(
+                f"  equity {_d(equity.equity)} {quote} at {equity.taken_at.isoformat()} "
+                f"(peak {peak_text})"
+            )
+        state = kill_switch.state.value if kill_switch else "uninitialized"
+        print(f"  kill switch: {state}")
+        for order in recent:
+            intent = order.intent
+            limit = _d(intent.limit_price) if intent.limit_price is not None else "market"
+            average = _d(order.average_fill_price) if order.average_fill_price else "-"
+            print(
+                f"  order {intent.created_at.isoformat()} {intent.side.value.upper()} "
+                f"{_d(intent.amount)} {intent.symbol} @ {limit} -> {order.status.value} "
+                f"filled={_d(order.filled_amount)} avg={average}"
+            )
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="arbitron",
@@ -472,10 +627,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subcommands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
+    for add in (_add_check, _add_db, _add_market, _add_strategy, _add_kill_switch, _add_paper):
+        add(subcommands)
+    return parser
+
+
+def _add_check(subcommands: "_Subcommands") -> None:
     check = subcommands.add_parser("check-config", help="validate a configuration file")
     check.add_argument("config", type=Path, help="path to a TOML config file")
     check.set_defaults(handler=_check_config)
 
+
+def _add_db(subcommands: "_Subcommands") -> None:
     db = subcommands.add_parser("db", help="database schema management")
     db_commands = db.add_subparsers(dest="db_command", required=True, metavar="DB_COMMAND")
     db_commands.add_parser("upgrade", help="apply migrations up to head").set_defaults(
@@ -485,6 +648,8 @@ def build_parser() -> argparse.ArgumentParser:
         "status", help="verify the schema is at the head this build expects"
     ).set_defaults(handler=_db_status)
 
+
+def _add_market(subcommands: "_Subcommands") -> None:
     market = subcommands.add_parser("market", help="market data ingestion")
     market_commands = market.add_subparsers(
         dest="market_command", required=True, metavar="MARKET_COMMAND"
@@ -502,6 +667,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync.set_defaults(handler=_market_sync)
 
+
+def _add_strategy(subcommands: "_Subcommands") -> None:
     strategy = subcommands.add_parser("strategy", help="strategy evaluation")
     strategy_commands = strategy.add_subparsers(
         dest="strategy_command", required=True, metavar="STRATEGY_COMMAND"
@@ -525,6 +692,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay_cmd.set_defaults(handler=_strategy_replay)
 
+
+def _add_kill_switch(subcommands: "_Subcommands") -> None:
     kill = subcommands.add_parser(
         "killswitch", help="show or change the durable kill switch (new orders need ARMED)"
     )
@@ -547,7 +716,22 @@ def build_parser() -> argparse.ArgumentParser:
     arm.add_argument("--ack", required=True, help="what was reviewed and why it is safe")
     arm.set_defaults(handler=_kill_switch)
 
-    return parser
+
+def _add_paper(subcommands: "_Subcommands") -> None:
+    paper = subcommands.add_parser("paper", help="paper trading (simulated venue, no real funds)")
+    paper_commands = paper.add_subparsers(
+        dest="paper_command", required=True, metavar="PAPER_COMMAND"
+    )
+    paper_run = paper_commands.add_parser(
+        "run", help="market data -> strategy -> risk -> simulated orders, per candle close"
+    )
+    paper_run.add_argument("config", type=Path, help="path to a paper-mode TOML config")
+    paper_run.add_argument("--follow", action="store_true", help="repeat after every candle close")
+    paper_run.set_defaults(handler=_paper_run)
+    paper_status = paper_commands.add_parser("status", help="paper balances, positions, orders")
+    paper_status.add_argument("config", type=Path, help="path to a TOML config file")
+    paper_status.add_argument("--orders", type=int, default=10, help="recent orders to show")
+    paper_status.set_defaults(handler=_paper_status)
 
 
 def _utc_timestamp(value: str) -> "datetime":

@@ -4,7 +4,7 @@ Autonomous spot crypto trading bot. It runs in backtest and paper modes first,
 and its design rule is **fail closed**: if it can't establish its state with
 confidence, it stops opening positions and asks for review.
 
-> **Status:** Phase 5 (sizing and risk gate) complete. There is no trading logic yet.
+> **Status:** Phase 6 (paper trading) complete. Only simulated trading is possible.
 > Live mode can't be selected. See [`plan.md`](plan.md) for the full
 > specification and phased roadmap.
 
@@ -122,6 +122,30 @@ uv run arbitron killswitch arm --operator NAME --ack "what you reviewed"
 uv run arbitron killswitch trip --operator NAME --reason "why"     # emergency stop
 uv run arbitron killswitch review --operator NAME --reason "..."   # required before re-arming
 ```
+
+## Paper trading
+
+A simulated venue trades on live Binance prices with no real funds. Each cycle
+syncs market data, evaluates the strategy, records equity, trips the kill
+switch on a daily-loss or drawdown breach, and acts on a fresh signal: size it,
+risk-check it, submit it, record the fill and the position.
+
+```bash
+uv run arbitron killswitch arm --operator NAME --ack "paper limits reviewed"
+uv run arbitron paper run configs/paper.toml --follow   # one cycle per candle close
+uv run arbitron paper status configs/paper.toml         # balances, positions, equity, orders
+```
+
+- The paper account is funded once with `[paper] starting_balance` (default 1000 USDT).
+- Fill model: the order fills at the best ask or bid moved against you by
+  `slippage_bps`, and never past its limit. Fees are charged in the asset you
+  receive, so selling "everything" leaves sub-lot dust, as on Binance.
+- Only a signal from the latest closed candle is traded, and only within one
+  candle interval of that candle closing.
+- An ambiguous submission (timeout, network error) leaves the order
+  `submission_unknown` and blocks new orders until reconciliation (Phase 7).
+- Results are simulated. They aren't evidence that the strategy would make
+  money.
 
 ## Development
 

@@ -20,6 +20,8 @@ class Position:
     average_cost: Decimal
     realized_pnl: Decimal
     updated_at: datetime
+    # All fees paid on this position, valued in the quote currency at fill time.
+    fees_paid: Decimal = Decimal(0)
 
     def __post_init__(self) -> None:
         require_text("exchange_id", self.exchange_id)
@@ -27,6 +29,7 @@ class Position:
         require_non_negative("quantity", self.quantity)
         require_non_negative("average_cost", self.average_cost)
         require_decimal("realized_pnl", self.realized_pnl)
+        require_non_negative("fees_paid", self.fees_paid)
         require_utc("updated_at", self.updated_at)
         if self.quantity == 0 and self.average_cost != 0:
             msg = "a flat position must have zero average_cost"

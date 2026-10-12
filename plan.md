@@ -287,18 +287,15 @@ arbitron/
 │       │   ├── manager.py          # RiskPolicy, decide(), loss breaches
 │       │   └── exposure.py         # valuation, worst-case exposure
 │       ├── execution/
-│       │   ├── order_manager.py
-│       │   ├── submission.py
-│       │   ├── polling.py
-│       │   └── reconciler.py
-│       ├── portfolio/
-│       │   ├── manager.py
-│       │   └── accounting.py
-│       ├── simulation/
-│       │   ├── fill_model.py
-│       │   └── fees.py
+│       │   ├── order_manager.py    # signal -> intent -> risk -> submit -> fills
+│       │   ├── freshness.py        # which signals may be traded
+│       │   └── reconciler.py       # Phase 7
+│       ├── portfolio/              # stdlib + domain imports only (tested)
+│       │   └── accounting.py       # weighted average cost from fills
+│       ├── simulation/             # stdlib + domain imports only (tested)
+│       │   └── fill_model.py       # top of book + slippage, fees in received asset
 │       ├── paper/
-│       │   └── broker.py
+│       │   └── broker.py           # simulated venue (ExecutionPort + AccountPort)
 │       ├── backtest/
 │       │   ├── engine.py
 │       │   ├── broker.py
@@ -317,6 +314,8 @@ arbitron/
 │       │   ├── policies.py         # config -> RiskPolicy / SizingPolicy
 │       │   ├── risk_gate.py        # persist decision + order transition
 │       │   ├── kill_switch.py      # operator kill-switch service
+│       │   ├── snapshot_builder.py # TradingSnapshot + equity history
+│       │   ├── paper_session.py    # full paper loop per candle close
 │       │   ├── engine.py
 │       │   ├── supervisor.py
 │       │   └── lifecycle.py
@@ -1122,6 +1121,35 @@ a fixed seed/config. - Share risk and order-management logic with live
 mode. - Clearly label simulated results and never mix them with real
 account data.
 
+### 17.2.1 Implemented paper venue (Phase 6; operator decisions 2026-10-12)
+
+-   **Funding:** the paper account is funded once with
+    `[paper] starting_balance` (default 1,000 USDT), recorded in the
+    append-only `paper_funding` table, not as trading P&L.
+-   **Fill model** (`simulation/fill_model.py`, shared with backtests): IOC
+    limit orders fill fully at the best ask (BUY) / bid (SELL) moved against
+    the order by `slippage_bps` (default 5), rounded to the tick against the
+    order; if that price breaches the limit, the order expires unfilled. A
+    `fill_ratio` < 1 exists only to exercise partial-fill handling in tests.
+-   **Fees:** `fee_pct` (default 0.1%) of the received asset, like Binance
+    spot: BUY fees reduce the BTC received, SELL fees reduce USDT proceeds.
+    Selling "the whole position" therefore leaves sub-lot dust, as on the
+    real venue; dust counts as flat (§11.1.1).
+-   **Venue state** lives in `paper_accounts`, `paper_balances`,
+    `paper_orders`, `paper_trades` (append-only), separate from the bot's
+    own orders/fills/positions, and each submission commits in the venue's
+    own transaction. This gives reconciliation (Phase 7) two independent
+    sources to compare, as with a real venue.
+-   **Venue rules enforced:** active market, LOT_SIZE, PRICE_FILTER,
+    NOTIONAL, funds reserved at the limit price, free base for sells,
+    unique client order ID per account.
+-   **Signal freshness:** only a signal from the latest closed candle, acted
+    on within one timeframe interval of that candle's close, is traded.
+-   **Cancellation:** IOC orders are final on submission; nothing rests on
+    the paper book, so `cancel_order` reports the final state. The kill
+    switch's open-order policy (§24.8) is therefore moot for paper; it
+    matters again for live venues where acknowledgments can be delayed.
+
 ### 17.3 Sandbox/testnet
 
 Use only after paper behavior is stable. Verify the exchange's sandbox
@@ -1395,21 +1423,21 @@ any risk-state failure blocks orders.
 
 ### Phase 6 --- Paper execution and order manager
 
--   [ ] Implement the paper broker (`ExecutionPort` + `AccountPort`)
+-   [x] Implement the paper broker (`ExecutionPort` + `AccountPort`)
     on top of the real `MarketDataPort`.
--   [ ] Implement intent lifecycle and order state machine.
--   [ ] Build `TradingSnapshot` from the portfolio projection, venue, and
+-   [x] Implement intent lifecycle and order state machine.
+-   [x] Build `TradingSnapshot` from the portfolio projection, venue, and
     database (marks from last closed candles, fresh ticker, day-start and
     peak equity, orders in the last hour, health flags).
--   [ ] Trip the kill switch automatically on `loss_limit_breaches()`.
--   [ ] Refuse to act on stale signals (source candle older than the
+-   [x] Trip the kill switch automatically on `loss_limit_breaches()`.
+-   [x] Refuse to act on stale signals (source candle older than the
     latest closed candle, or beyond a configured age), since catch-up
     after downtime persists signals for past candles.
--   [ ] Persist before side effects.
--   [ ] Implement the shared `simulation` fill/fee model and document
+-   [x] Persist before side effects.
+-   [x] Implement the shared `simulation` fill/fee model and document
     it.
--   [ ] Implement partial fills and cancellation semantics.
--   [ ] Add replayable execution tests.
+-   [x] Implement partial fills and cancellation semantics.
+-   [x] Add replayable execution tests.
 
 **Acceptance:** end-to-end paper run creates auditable signals, risk
 decisions, orders, fills, positions, and snapshots without duplicate
@@ -1545,7 +1573,8 @@ Do not guess these; use safe defaults and document assumptions:
     slippage cap; no replacement of unfilled IOC remainders (a new signal
     is needed).
 8.  **Existing-order response to kill switch:** define whether to cancel
-    entries, retain exits, or require review.
+    entries, retain exits, or require review. (Moot while all orders are
+    IOC; revisit before any resting-order type is introduced.)
 9.  **Alert channel:** choose Telegram, email, or another supported
     channel and configure secrets.
 10. **Hosting and backups:** select provider, region, access model,

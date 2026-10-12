@@ -12,6 +12,7 @@ discrepancy and must never be silently ignored.
 
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
@@ -20,6 +21,8 @@ from arbitron.domain.events import OrderEvent, SystemEvent
 from arbitron.domain.fills import Fill
 from arbitron.domain.market import Candle, Timeframe
 from arbitron.domain.orders import Order
+from arbitron.domain.portfolio import EquitySnapshot
+from arbitron.domain.positions import Position
 from arbitron.domain.risk import KillSwitch, RiskDecision
 from arbitron.domain.signals import Signal
 from arbitron.domain.strategies import StrategyConfig, StrategyCursor
@@ -87,8 +90,18 @@ class SignalRepository(Protocol):
 
     async def get(self, signal_id: UUID) -> Signal | None: ...
 
+    async def latest_for(
+        self, config_hash: str, exchange_id: str, symbol: str, timeframe: Timeframe
+    ) -> Signal | None:
+        """The signal with the latest source candle for this config and market."""
+        ...
+
 
 class OrderRepository(Protocol):
+    async def count_created_since(self, exchange_id: str, since: datetime) -> int:
+        """Orders whose intent was created at or after ``since`` (order-frequency limit)."""
+        ...
+
     async def list_events(self, order_id: UUID) -> Sequence[OrderEvent]:
         """Lifecycle events in insertion order."""
         ...
@@ -107,6 +120,10 @@ class OrderRepository(Protocol):
     ) -> Order | None: ...
 
     async def list_non_terminal(self, exchange_id: str) -> Sequence[Order]: ...
+
+    async def list_recent(self, exchange_id: str, limit: int) -> Sequence[Order]:
+        """Most recently created first."""
+        ...
 
     async def apply_transition(self, previous: Order, updated: Order, event: OrderEvent) -> None:
         """Persist ``updated`` and append ``event`` atomically.
@@ -145,6 +162,30 @@ class KillSwitchRepository(Protocol):
         ...
 
 
+class PositionRepository(Protocol):
+    async def get(self, exchange_id: str, symbol: str) -> Position | None: ...
+
+    async def list(self, exchange_id: str) -> Sequence[Position]: ...
+
+    async def save(self, previous: Position | None, updated: Position) -> None:
+        """Raises ``ConcurrencyConflict`` if the stored position is not ``previous``."""
+        ...
+
+
+class EquitySnapshotRepository(Protocol):
+    async def add(self, snapshot: EquitySnapshot) -> None: ...
+
+    async def first_since(self, quote_currency: str, since: datetime) -> EquitySnapshot | None:
+        """Earliest snapshot at or after ``since`` (the daily-loss baseline)."""
+        ...
+
+    async def peak(self, quote_currency: str) -> Decimal | None:
+        """Highest equity ever recorded (the drawdown high-water mark)."""
+        ...
+
+    async def latest(self, quote_currency: str) -> EquitySnapshot | None: ...
+
+
 class SystemEventRepository(Protocol):
     async def append(self, event: SystemEvent) -> None: ...
 
@@ -162,6 +203,8 @@ class UnitOfWork(Protocol):
     fills: FillRepository
     risk_decisions: RiskDecisionRepository
     kill_switch: KillSwitchRepository
+    positions: PositionRepository
+    equity_snapshots: EquitySnapshotRepository
     system_events: SystemEventRepository
 
     async def __aenter__(self) -> Self: ...

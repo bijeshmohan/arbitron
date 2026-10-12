@@ -1,14 +1,16 @@
 from collections.abc import Sequence
 from dataclasses import replace
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from arbitron.domain.enums import OrderStatus
 from arbitron.domain.events import OrderEvent
 from arbitron.domain.fills import Fill
+from arbitron.domain.market import Timeframe
 from arbitron.domain.orders import TERMINAL_STATUSES, Order, can_transition
 from arbitron.domain.risk import RiskDecision
 from arbitron.domain.signals import Signal
@@ -59,10 +61,34 @@ class SqlSignalRepository:
         row = await self._session.get(SignalRow, signal_id)
         return signal_from_row(row) if row is not None else None
 
+    async def latest_for(
+        self, config_hash: str, exchange_id: str, symbol: str, timeframe: Timeframe
+    ) -> Signal | None:
+        row = await self._session.scalar(
+            select(SignalRow)
+            .where(
+                SignalRow.config_hash == config_hash,
+                SignalRow.exchange_id == exchange_id,
+                SignalRow.symbol == symbol,
+                SignalRow.timeframe == timeframe.value,
+            )
+            .order_by(SignalRow.source_candle_time.desc())
+            .limit(1)
+        )
+        return signal_from_row(row) if row is not None else None
+
 
 class SqlOrderRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def count_created_since(self, exchange_id: str, since: datetime) -> int:
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(OrderRow)
+            .where(OrderRow.exchange_id == exchange_id, OrderRow.intent_created_at >= since)
+        )
+        return int(count or 0)
 
     async def add_if_absent(self, order: Order, event: OrderEvent) -> bool:
         if order.status is not OrderStatus.CREATED:
@@ -111,6 +137,15 @@ class SqlOrderRepository:
                 OrderRow.status.not_in([s.value for s in TERMINAL_STATUSES]),
             )
             .order_by(OrderRow.intent_created_at, OrderRow.id)
+        )
+        return [order_from_row(row) for row in rows]
+
+    async def list_recent(self, exchange_id: str, limit: int) -> Sequence[Order]:
+        rows = await self._session.scalars(
+            select(OrderRow)
+            .where(OrderRow.exchange_id == exchange_id)
+            .order_by(OrderRow.intent_created_at.desc(), OrderRow.id)
+            .limit(limit)
         )
         return [order_from_row(row) for row in rows]
 
