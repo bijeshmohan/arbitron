@@ -8,6 +8,7 @@ only when the error is retryable.
 
 import asyncio
 import random
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -70,13 +71,24 @@ class CcxtMarketData:
         self._rng = rng
         self.capabilities = VenueCapabilities.from_ccxt_has(exchange.has)
         self.markets_loaded_at: datetime | None = None
+        # (operation, outcome, seconds) per attempt, for metrics; set by the runtime.
+        self.observer: Callable[[str, str, float], None] | None = None
 
-    async def _call[T](self, make_call: Callable[[], Awaitable[T]]) -> T:
+    async def _call[T](self, operation: str, make_call: Callable[[], Awaitable[T]]) -> T:
         async def attempt() -> T:
             async with self._semaphore:
-                with venue_errors():
-                    async with asyncio.timeout(self._call_timeout):
-                        return await make_call()
+                started = time.monotonic()
+                outcome = "ok"
+                try:
+                    with venue_errors():
+                        async with asyncio.timeout(self._call_timeout):
+                            return await make_call()
+                except Exception as exc:
+                    outcome = type(exc).__name__
+                    raise
+                finally:
+                    if self.observer is not None:
+                        self.observer(operation, outcome, time.monotonic() - started)
 
         return await retry_read(attempt, self._retry, sleep=self._sleep, rng=self._rng)
 
@@ -86,7 +98,7 @@ class CcxtMarketData:
             raise MarketUnavailable(msg)
 
     async def load_markets(self) -> Mapping[str, Market]:
-        raw = await self._call(lambda: self._exchange.load_markets(reload=True))
+        raw = await self._call("load_markets", lambda: self._exchange.load_markets(reload=True))
         markets: dict[str, Market] = {}
         for symbol in self._symbols:
             entry = raw.get(symbol)
@@ -113,7 +125,8 @@ class CcxtMarketData:
         self._require_symbol(symbol)
         since_ms = datetime_to_ms(since) if since is not None else None
         rows = await self._call(
-            lambda: self._exchange.fetch_ohlcv(symbol, timeframe.value, since_ms, limit)
+            "fetch_ohlcv",
+            lambda: self._exchange.fetch_ohlcv(symbol, timeframe.value, since_ms, limit),
         )
         return candles_from_ohlcv(
             rows,
@@ -126,11 +139,11 @@ class CcxtMarketData:
 
     async def fetch_ticker(self, symbol: str) -> Ticker:
         self._require_symbol(symbol)
-        raw = await self._call(lambda: self._exchange.fetch_ticker(symbol))
+        raw = await self._call("fetch_ticker", lambda: self._exchange.fetch_ticker(symbol))
         return ticker_from_ccxt(raw, exchange_id=self.exchange_id, symbol=symbol)
 
     async def fetch_time(self) -> datetime:
-        value = await self._call(self._exchange.fetch_time)
+        value = await self._call("fetch_time", self._exchange.fetch_time)
         if value is None:
             msg = "venue returned no server time"
             raise InvalidVenueData(msg)

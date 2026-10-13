@@ -1,6 +1,9 @@
 """SQLAlchemy implementations of the persistence ports."""
 
-from arbitron.persistence.repositories.events import SqlSystemEventRepository
+from arbitron.persistence.repositories.events import (
+    SqlHeartbeatRepository,
+    SqlSystemEventRepository,
+)
 from arbitron.persistence.repositories.market import SqlCandleRepository
 from arbitron.persistence.repositories.portfolio import (
     SqlEquitySnapshotRepository,
@@ -23,6 +26,7 @@ __all__ = [
     "SqlCandleRepository",
     "SqlEquitySnapshotRepository",
     "SqlFillRepository",
+    "SqlHeartbeatRepository",
     "SqlKillSwitchRepository",
     "SqlOrderRepository",
     "SqlPositionRepository",

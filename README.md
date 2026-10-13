@@ -4,7 +4,7 @@ Autonomous spot crypto trading bot. It runs in backtest and paper modes first,
 and its design rule is **fail closed**: if it can't establish its state with
 confidence, it stops opening positions and asks for review.
 
-> **Status:** Phase 7 (reconciliation and recovery) complete. Only simulated trading is possible.
+> **Status:** Phase 8 (supervision, monitoring, alerts) complete. Only simulated trading is possible.
 > Live mode can't be selected. See [`plan.md`](plan.md) for the full
 > specification and phased roadmap.
 
@@ -76,7 +76,8 @@ uv run arbitron market sync configs/paper.toml --follow   # after every candle c
 Exit codes: `0` ok, `1` invalid config, `2` database error, `3` the data-quality
 gate is blocking (stale data, missing history, clock skew, inactive market, ...),
 `4` venue request failed, `5` the request isn't allowed in the current state
-(for example, arming a tripped kill switch without a review first).
+(for example, arming a tripped kill switch without a review first), `6` a
+supervised session stopped because of a failure.
 
 ## Strategy signals
 
@@ -172,6 +173,44 @@ uv run arbitron orders resolve configs/paper.toml ORDER_ID --as not_placed \
 
 `orders resolve` only closes an order as unfilled. It refuses if the venue
 has any record of the order: fills only ever come from venue data.
+
+## Running unattended: supervision, monitoring, alerts
+
+`paper run --follow` runs a supervised process:
+
+- Separate tasks handle trading, reconciliation, the instance-lock check,
+  alerts, heartbeats and the HTTP endpoints.
+- A crashed critical task is restarted up to 3 times in 10 minutes. One more
+  crash trips the kill switch and stops the session.
+- SIGINT and SIGTERM shut it down cleanly.
+
+Endpoints are served on `127.0.0.1:9108`, configured under `[monitoring]`:
+
+- `GET /health`: liveness, with per-task heartbeats.
+- `GET /ready`: 200 only when it's safe to trade. Otherwise 503 with the
+  failing checks (for example, the kill switch isn't armed).
+- `GET /metrics`: Prometheus metrics covering venue calls, data freshness,
+  signals, orders, risk rejections, reconciliation, equity, kill-switch state
+  and heartbeats.
+
+Logs are JSON lines on stderr, with secrets redacted.
+
+### Telegram alerts
+
+Critical events (kill switch tripped, unknown orders, reconciliation
+discrepancies, task crashes, authentication failures) are sent to Telegram.
+Each alert says what happened, what the bot already did, and what to do next.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
+2. Send your bot any message, then find your chat id at
+   `https://api.telegram.org/bot<TOKEN>/getUpdates`.
+3. Set `ARBITRON_TELEGRAM_BOT_TOKEN` and `ARBITRON_TELEGRAM_CHAT_ID` in the
+   environment (or `.env`), and `[alerts] channel = "telegram"` in your config.
+4. Check delivery: `uv run arbitron alerts test configs/paper.toml`
+
+With `channel = "telegram"`, `paper run --follow` refuses to start without
+those two secrets. The `log` channel only logs alerts; use it for trying
+things out, not for unattended running.
 
 ## Development
 

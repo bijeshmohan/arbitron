@@ -79,6 +79,24 @@ starting_balance = "1000"
 slippage_bps = "5"
 fee_pct = "0.1"
 
+# Operator alerts. Use "telegram" for any unattended run; it needs
+# ARBITRON_TELEGRAM_BOT_TOKEN and ARBITRON_TELEGRAM_CHAT_ID in the environment.
+# "log" only logs alerts (fine for trying things out).
+[alerts]
+channel = "log"
+min_severity = "critical"
+dedupe_minutes = 30
+max_per_hour = 20
+
+# Logs, metrics, health endpoints, task supervision. These are the defaults.
+[monitoring]
+http_host = "127.0.0.1"
+http_port = 9108
+log_format = "json"
+log_level = "INFO"
+task_max_restarts = 3
+task_restart_window_seconds = 600
+
 [live]
 enabled = false
 acknowledgement = false

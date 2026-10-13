@@ -17,6 +17,7 @@ from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
 
+from arbitron.domain.enums import Severity
 from arbitron.domain.events import OrderEvent, SystemEvent
 from arbitron.domain.fills import Fill
 from arbitron.domain.market import Candle, Timeframe
@@ -202,9 +203,25 @@ class ReconciliationLookupRepository(Protocol):
 class SystemEventRepository(Protocol):
     async def append(self, event: SystemEvent) -> None: ...
 
+    async def latest_id(self) -> int:
+        """Position of the newest event (0 if none): a cursor for readers."""
+        ...
+
+    async def list_after(
+        self, after_id: int, severities: frozenset[Severity], limit: int
+    ) -> Sequence[tuple[int, SystemEvent]]:
+        """Events newer than ``after_id`` with the given severities, oldest first."""
+        ...
+
     async def list_recent(self, limit: int) -> Sequence[SystemEvent]:
         """Most recent first."""
         ...
+
+
+class HeartbeatRepository(Protocol):
+    async def upsert(
+        self, *, component: str, instance: str, beat_at: datetime, status: str, detail: str
+    ) -> None: ...
 
 
 class UnitOfWork(Protocol):
@@ -219,6 +236,7 @@ class UnitOfWork(Protocol):
     positions: PositionRepository
     equity_snapshots: EquitySnapshotRepository
     reconciliation_lookups: ReconciliationLookupRepository
+    heartbeats: HeartbeatRepository
     system_events: SystemEventRepository
 
     async def __aenter__(self) -> Self: ...

@@ -171,3 +171,53 @@ def test_replay_rejects_bad_timestamp(capsys: pytest.CaptureFixture[str]) -> Non
     with pytest.raises(SystemExit):
         main(["strategy", "replay", str(EXAMPLE_PAPER), "--start", "yesterday"])
     assert "invalid ISO-8601" in capsys.readouterr().err
+
+
+def test_alerts_test_via_log_channel(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["alerts", "test", str(EXAMPLE_PAPER)]) == EXIT_OK
+    assert "test alert sent via log" in capsys.readouterr().out
+
+
+def _telegram_config(tmp_path: Path) -> Path:
+    path = tmp_path / "telegram.toml"
+    path.write_text(EXAMPLE_PAPER.read_text().replace('channel = "log"', 'channel = "telegram"'))
+    return path
+
+
+@pytest.mark.parametrize("command", [["alerts", "test"], ["paper", "run", "--follow"]])
+def test_telegram_without_credentials_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: list[str],
+) -> None:
+    monkeypatch.delenv("ARBITRON_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("ARBITRON_TELEGRAM_CHAT_ID", raising=False)
+    config = str(_telegram_config(tmp_path))
+    argv = [*command[:2], config, *command[2:]]
+
+    assert main(argv) == EXIT_INVALID_CONFIG
+    assert "ARBITRON_TELEGRAM_BOT_TOKEN" in capsys.readouterr().err
+
+
+def test_alerts_test_reports_telegram_failure_without_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import httpx  # noqa: PLC0415
+
+    from arbitron.cli import EXIT_VENUE_ERROR  # noqa: PLC0415
+
+    token = "123456789:AAH-abcdefghijklmnopqrstuvwxyz_0123456"
+    monkeypatch.setenv("ARBITRON_TELEGRAM_BOT_TOKEN", token)
+    monkeypatch.setenv("ARBITRON_TELEGRAM_CHAT_ID", "42")
+    real_client = httpx.AsyncClient
+
+    def unauthorized(**kwargs: object) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(lambda _: httpx.Response(401)))
+
+    monkeypatch.setattr(httpx, "AsyncClient", unauthorized)
+
+    assert main(["alerts", "test", str(_telegram_config(tmp_path))]) == EXIT_VENUE_ERROR
+    captured = capsys.readouterr()
+    assert "HTTP 401" in captured.err
+    assert token not in captured.out + captured.err

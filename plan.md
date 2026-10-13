@@ -309,6 +309,8 @@ arbitron/
 │       │   ├── migrations/         # Alembic env + versions (packaged)
 │       │   └── repositories/
 │       ├── application/
+│       │   ├── supervisor.py       # task lifecycle, restart policy, safety trip
+│       │   ├── paper_runtime.py    # supervised paper process + readiness
 │       │   ├── strategy_runner.py  # live evaluation, cursor, persistence
 │       │   ├── pipeline.py         # market cycle -> quality gate -> strategy
 │       │   ├── policies.py         # config -> RiskPolicy / SizingPolicy
@@ -317,18 +319,16 @@ arbitron/
 │       │   ├── snapshot_builder.py # TradingSnapshot + equity history
 │       │   ├── paper_session.py    # startup recovery + full paper loop per candle
 │       │   ├── order_resolution.py # audited operator resolution (zero-fill only)
-│       │   ├── engine.py
-│       │   ├── supervisor.py
-│       │   └── lifecycle.py
 │       ├── api/
 │       │   ├── app.py
 │       │   ├── dependencies.py
 │       │   └── routes/
 │       └── monitoring/
-│           ├── logging.py
-│           ├── metrics.py
-│           ├── health.py
-│           └── alerts.py
+│           ├── logging.py          # JSON logs + redaction
+│           ├── metrics.py          # Prometheus (dedicated registry)
+│           ├── health.py           # heartbeats, readiness checks
+│           ├── alerts.py           # Telegram notifier, dispatcher, playbook
+│           └── http.py             # /health /ready /metrics
 ├── typings/ccxt/               # minimal type stubs for the CCXT surface used
 ├── tests/
 │   ├── unit/
@@ -1073,6 +1073,29 @@ policy.
 -   Clock synchronization indicator if available.
 -   Disk/storage pressure where operationally accessible.
 
+### 15.1.1 Implemented (Phase 8)
+
+`arbitron paper run --follow` runs a supervised process (see
+`application/paper_runtime.py`):
+
+| task | critical | does |
+|---|---|---|
+| `trading` | yes | one session cycle after every candle close |
+| `reconciliation` | yes | every `reconciliation_interval_seconds` |
+| `lock-watch` | yes | checks the instance lock every 15 s; loss is fatal |
+| `alerts` | no | dispatches critical events to the operator channel |
+| `heartbeats` | no | persists task health to the `heartbeats` table |
+| `http` | no | serves `/health`, `/ready` and `/metrics` on 127.0.0.1 |
+
+- Trading cycles and reconciliation share a lock, so reconciliation never
+  observes a half-recorded submission.
+- `/ready` returns 200 only when startup is done, the kill switch is armed,
+  reconciliation is clean, market data is ok and all critical tasks are
+  beating. Otherwise it returns 503 and names the failing checks.
+- Crash policy (operator decision, 2026-10-13): restart with backoff up to 3
+  times in 10 minutes. One more crash trips the kill switch and stops the
+  session. A fatal error, such as losing the lock, stops at once.
+
 ### 15.2 Task behavior
 
 -   Every background task has a named lifecycle and heartbeat.
@@ -1247,6 +1270,21 @@ notify.
 
 Alerts should be deduplicated, rate-limited, and include the action
 already taken plus a concise remediation hint.
+
+Implemented (Phase 8; operator decisions, 2026-10-13): the channel is
+**Telegram**, and only **critical** events are sent; everything else is still
+logged and stored. The dispatcher follows `system_events`, so every
+component's critical events become alerts with no extra wiring.
+
+- Deduplication: one alert per event and subject per 30 minutes; repeats are
+  counted into the next alert.
+- Rate limit: 20 alerts per hour; suppressed alerts are summarized in the
+  next one.
+- Delivery failures are retried for up to an hour and never block a safety
+  action.
+- Logs are JSON on stderr with secrets redacted. The Telegram token is also
+  caught by pattern, since HTTP errors embed it in URLs.
+- `arbitron alerts test` checks the channel end to end.
 
 ------------------------------------------------------------------------
 
@@ -1486,12 +1524,12 @@ alerts.
 
 ### Phase 8 --- Supervisor and observability
 
--   [ ] Implement task supervisor, health registry, heartbeats, graceful
+-   [x] Implement task supervisor, health registry, heartbeats, graceful
     shutdown.
--   [ ] Add structured logging and redaction.
--   [ ] Add Prometheus metrics and health/readiness endpoints.
--   [ ] Add notifier abstraction and alert dedupe/rate limiting.
--   [ ] Verify critical task failure trips safety policy.
+-   [x] Add structured logging and redaction.
+-   [x] Add Prometheus metrics and health/readiness endpoints.
+-   [x] Add notifier abstraction and alert dedupe/rate limiting.
+-   [x] Verify critical task failure trips safety policy.
 
 **Acceptance:** simulated task/dependency failures produce expected safe
 state and observable alerts; shutdown closes resources cleanly.
@@ -1600,8 +1638,8 @@ Do not guess these; use safe defaults and document assumptions:
 8.  **Existing-order response to kill switch:** define whether to cancel
     entries, retain exits, or require review. (Moot while all orders are
     IOC; revisit before any resting-order type is introduced.)
-9.  **Alert channel:** choose Telegram, email, or another supported
-    channel and configure secrets.
+9.  **Alert channel:** **decided:** Telegram, critical events only
+    (`ARBITRON_TELEGRAM_BOT_TOKEN` and `ARBITRON_TELEGRAM_CHAT_ID`).
 10. **Hosting and backups:** select provider, region, access model,
     backup retention, and restore objective.
 11. **Jurisdictional requirements:** verify applicable exchange terms,

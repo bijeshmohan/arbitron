@@ -357,6 +357,18 @@ class ReconciliationLookupRow(Base):
     found: Mapped[bool] = mapped_column(Boolean)
 
 
+class HeartbeatRow(Base):
+    """Latest heartbeat per supervised task (plan §7.4), for external monitoring."""
+
+    __tablename__ = "heartbeats"
+
+    component: Mapped[str] = mapped_column(Text, primary_key=True)
+    instance: Mapped[str] = mapped_column(Text, primary_key=True)
+    last_beat: Mapped[datetime] = mapped_column(Timestamp)
+    status: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text)
+
+
 # --- Paper venue -------------------------------------------------------------
 # The simulated exchange's own state, deliberately separate from the bot's
 # records (orders, fills, positions) so reconciliation compares two sources,

@@ -161,6 +161,9 @@ class PaperSession:
         self._reconcile_every = timedelta(seconds=config.execution.reconciliation_interval_seconds)
         self._last_reconciliation: ReconciliationReport | None = None
         self._ready = False
+        # Trading cycles and reconciliation never interleave: reconciliation
+        # must not observe a submission between the venue's commit and ours.
+        self._mutex = asyncio.Lock()
 
     async def start(self) -> StartupReport:
         """Startup recovery sequence (plan §14.1). Trading is enabled only afterwards.
@@ -194,7 +197,24 @@ class PaperSession:
         last = self._last_reconciliation
         return last is None or self._clock.now() - last.started_at >= self._reconcile_every
 
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
+    @property
+    def last_reconciliation(self) -> ReconciliationReport | None:
+        return self._last_reconciliation
+
+    async def reconcile_now(self) -> ReconciliationReport:
+        """Periodic reconciliation, serialized with trading cycles."""
+        async with self._mutex:
+            return await self._reconcile()
+
     async def run_cycle(self) -> SessionOutcome:
+        async with self._mutex:
+            return await self._run_cycle()
+
+    async def _run_cycle(self) -> SessionOutcome:
         if not self._ready:
             msg = "call start() before running cycles"
             raise RuntimeError(msg)

@@ -6,6 +6,7 @@ application is async from the first command onward.
 
 import argparse
 import asyncio
+import signal as signal_module
 import sys
 import tomllib
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
@@ -32,8 +33,10 @@ if TYPE_CHECKING:
     from arbitron.exchange.ccxt_adapter import CcxtMarketData
     from arbitron.execution.reconciler import ReconciliationReport
     from arbitron.market.service import CycleOutcome
+    from arbitron.persistence.lock import InstanceLock
     from arbitron.ports.clock import Clock
     from arbitron.ports.errors import VenueError
+    from arbitron.ports.notifier import Notifier
     from arbitron.ports.repositories import UnitOfWork
     from arbitron.strategy.base import Strategy
 
@@ -46,6 +49,7 @@ EXIT_DATABASE_ERROR = 2
 EXIT_DATA_QUALITY = 3
 EXIT_VENUE_ERROR = 4
 EXIT_INVALID_STATE = 5
+EXIT_SESSION_FAILED = 6
 
 Command = Callable[[argparse.Namespace], Coroutine[None, None, int]]
 
@@ -489,9 +493,63 @@ async def _kill_switch(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _secret_values() -> list[str]:
+    secrets = Secrets()
+    values = [
+        secrets.exchange_api_key,
+        secrets.exchange_api_secret,
+        secrets.exchange_api_password,
+        secrets.database_url,
+        secrets.telegram_bot_token,
+    ]
+    return [v.get_secret_value() for v in values if v is not None]
+
+
+def _require_notifier(config: ArbitronConfig) -> "Notifier":
+    """The configured alert channel; refuses Telegram without its credentials."""
+    from arbitron.config.settings import AlertChannel  # noqa: PLC0415
+    from arbitron.monitoring.alerts import LogNotifier, TelegramNotifier  # noqa: PLC0415
+
+    if config.alerts.channel is AlertChannel.LOG:
+        return LogNotifier()
+    secrets = Secrets()
+    if secrets.telegram_bot_token is None or secrets.telegram_chat_id is None:
+        print(
+            "error: [alerts] channel is 'telegram' but ARBITRON_TELEGRAM_BOT_TOKEN and "
+            "ARBITRON_TELEGRAM_CHAT_ID are not both set",
+            file=sys.stderr,
+        )
+        raise _CommandExit(EXIT_INVALID_CONFIG)
+    return TelegramNotifier(
+        bot_token=secrets.telegram_bot_token.get_secret_value(),
+        chat_id=secrets.telegram_chat_id.get_secret_value(),
+    )
+
+
+def _print_session_cycle(outcome: "SessionOutcome", config: ArbitronConfig) -> None:
+    _print_market(outcome.pipeline.market, config.strategy.timeframe)
+    for run in outcome.pipeline.runs:
+        for signal in run.signals:
+            _print_signal(signal)
+    if outcome.equity is not None:
+        print(f"  equity: {_d(outcome.equity)} {config.exchange.quote_currency}")
+    if outcome.tripped:
+        print(f"  ! KILL SWITCH TRIPPED: {', '.join(r.value for r in outcome.tripped)}")
+    for order in outcome.orders:
+        status = order.order.status.value if order.order else "-"
+        print(f"  order: {order.action.value} status={status} {order.detail}")
+    for reason in outcome.skipped_signals:
+        print(f"  ~ signal not traded: {reason}")
+    if outcome.reconciliation is not None:
+        _print_reconciliation(outcome.reconciliation, label="reconciliation")
+    sys.stdout.flush()
+
+
 async def _paper_run(args: argparse.Namespace) -> int:
-    from arbitron.application.paper_session import PaperSession, SessionOutcome  # noqa: PLC0415
+    from arbitron.application.paper_runtime import PaperRuntime  # noqa: PLC0415
+    from arbitron.application.paper_session import PaperSession  # noqa: PLC0415
     from arbitron.config.settings import Mode  # noqa: PLC0415
+    from arbitron.monitoring.logging import configure_logging  # noqa: PLC0415
     from arbitron.persistence.db import create_engine, create_session_factory  # noqa: PLC0415
     from arbitron.persistence.lock import InstanceLock, LockNotAcquiredError  # noqa: PLC0415
 
@@ -500,11 +558,17 @@ async def _paper_run(args: argparse.Namespace) -> int:
         print(f"error: paper run needs app.mode = 'paper', got {config.app.mode}", file=sys.stderr)
         return EXIT_INVALID_CONFIG
     strategy = _require_strategy(config)
+    notifier = _require_notifier(config) if args.follow else None
+    redactor = configure_logging(
+        log_format=config.monitoring.log_format,
+        level=config.monitoring.log_level,
+        secrets=_secret_values(),
+    )
     async with _runtime(config, venue=True) as rt:
         assert rt.market_data is not None  # noqa: S101 - venue=True
         url = _database_url()
         assert url is not None  # noqa: S101 - _runtime checked it
-        lock_engine = create_engine(url, pool_size=1)
+        lock_engine = create_engine(url, pool_size=2)
         lock = InstanceLock(
             lock_engine, exchange_id=config.exchange.id, account=config.paper.account, mode="paper"
         )
@@ -523,65 +587,108 @@ async def _paper_run(args: argparse.Namespace) -> int:
                 uow_factory=rt.uow_factory,
                 clock=rt.clock,
             )
-            startup = await session.start()
-            if startup.funded:
-                print(
-                    f"paper account {config.paper.account!r} funded with "
-                    f"{config.paper.starting_balance} {config.exchange.quote_currency}"
-                )
-            if startup.recovered:
-                print(f"  ! {startup.recovered} order(s) were interrupted mid-submission")
-            _print_reconciliation(startup.reconciliation, label="startup reconciliation")
+            if notifier is None:
+                return await _paper_cycle_once(session, config, lock)
 
-            def report(outcome: SessionOutcome) -> None:
-                _print_market(outcome.pipeline.market, config.strategy.timeframe)
-                for run in outcome.pipeline.runs:
-                    for signal in run.signals:
-                        _print_signal(signal)
-                if outcome.equity is not None:
-                    print(f"  equity: {_d(outcome.equity)} {config.exchange.quote_currency}")
-                if outcome.tripped:
-                    reasons = ", ".join(r.value for r in outcome.tripped)
-                    print(f"  ! KILL SWITCH TRIPPED: {reasons}")
-                for order in outcome.orders:
-                    status = order.order.status.value if order.order else "-"
-                    print(f"  order: {order.action.value} status={status} {order.detail}")
-                for reason in outcome.skipped_signals:
-                    print(f"  ~ signal not traded: {reason}")
-                if outcome.reconciliation is not None:
-                    _print_reconciliation(outcome.reconciliation, label="reconciliation")
-                sys.stdout.flush()
-
-            async def checked_cycle() -> SessionOutcome:
-                await lock.check()
-                return await session.run_cycle()
-
-            return await _run_cycles(
-                follow=args.follow,
-                once=checked_cycle,
-                forever=lambda on_cycle, on_error, stop: follow_with(
-                    checked_cycle, session, on_cycle, on_error, stop
-                ),
-                report=report,
-                ok=lambda outcome: outcome.pipeline.market.ok,
+            runtime = PaperRuntime(
+                config,
+                session=session,
+                notifier=notifier,
+                uow_factory=rt.uow_factory,
+                clock=rt.clock,
+                lock=lock,
+                redactor=redactor,
+                on_cycle=lambda outcome: _print_session_cycle(outcome, config),
             )
+            metrics = runtime.metrics
+
+            def observe_venue(operation: str, result: str, seconds: float) -> None:
+                metrics.venue_requests.labels(operation, result).inc()
+                metrics.venue_latency.labels(operation).observe(seconds)
+
+            rt.market_data.observer = observe_venue
+            stop = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            for sig in (signal_module.SIGINT, signal_module.SIGTERM):
+                loop.add_signal_handler(sig, stop.set)
+            print(
+                f"paper session running; /health /ready /metrics on "
+                f"http://{config.monitoring.http_host}:{config.monitoring.http_port}"
+            )
+            outcome = await runtime.run(stop)
+            if outcome.failure is not None:
+                print(f"error: session stopped: {outcome.failure}", file=sys.stderr)
+                return EXIT_SESSION_FAILED
+            return EXIT_OK
         finally:
+            close = getattr(notifier, "close", None)
+            if close is not None:
+                await close()
             await lock.release()
             await lock_engine.dispose()
 
 
-async def follow_with(
-    cycle: "Callable[[], Awaitable[SessionOutcome]]",
-    session: "PaperSession",
-    on_cycle: "Callable[[SessionOutcome], None]",
-    on_error: "Callable[[VenueError], None]",
-    stop: asyncio.Event,
-) -> None:
-    from arbitron.market.service import follow_closes  # noqa: PLC0415
+async def _paper_cycle_once(
+    session: "PaperSession", config: ArbitronConfig, lock: "InstanceLock"
+) -> int:
+    from arbitron.ports.errors import VenueError  # noqa: PLC0415
 
-    await follow_closes(
-        cycle, on_cycle, on_error, stop=stop, wait=session.market.seconds_until_next_close
+    startup = await session.start()
+    if startup.funded:
+        print(
+            f"paper account {config.paper.account!r} funded with "
+            f"{config.paper.starting_balance} {config.exchange.quote_currency}"
+        )
+    if startup.recovered:
+        print(f"  ! {startup.recovered} order(s) were interrupted mid-submission")
+    _print_reconciliation(startup.reconciliation, label="startup reconciliation")
+    await lock.check()
+    try:
+        outcome = await session.run_cycle()
+    except VenueError as exc:
+        print(f"error: venue request failed: {exc}", file=sys.stderr)
+        return EXIT_VENUE_ERROR
+    _print_session_cycle(outcome, config)
+    return EXIT_OK if outcome.pipeline.market.ok else EXIT_DATA_QUALITY
+
+
+async def _alerts_test(args: argparse.Namespace) -> int:
+    from arbitron.domain.enums import Severity  # noqa: PLC0415
+    from arbitron.domain.events import Alert  # noqa: PLC0415
+    from arbitron.monitoring.alerts import NotifierError  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    notifier = _require_notifier(config)
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    alert = Alert(
+        severity=Severity.CRITICAL,
+        title="Test alert",
+        message="This is a test from `arbitron alerts test`. No action is needed.",
+        action_taken="None: this is a test.",
+        remediation="If you can read this, alert delivery works.",
+        dedupe_key="test",
+        occurred_at=datetime.now(UTC),
     )
+    try:
+        await notifier.notify(alert)
+    except NotifierError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_VENUE_ERROR
+    finally:
+        close = getattr(notifier, "close", None)
+        if close is not None:
+            await close()
+    print(f"test alert sent via {config.alerts.channel.value}")
+    return EXIT_OK
+
+
+def _add_alerts(subcommands: "_Subcommands") -> None:
+    alerts = subcommands.add_parser("alerts", help="operator alert channel")
+    commands = alerts.add_subparsers(dest="alerts_command", required=True, metavar="ALERTS_COMMAND")
+    test = commands.add_parser("test", help="send a test alert through the configured channel")
+    test.add_argument("config", type=Path, help="path to a TOML config file")
+    test.set_defaults(handler=_alerts_test)
 
 
 async def _paper_status(args: argparse.Namespace) -> int:
@@ -655,6 +762,7 @@ def build_parser() -> argparse.ArgumentParser:
         _add_kill_switch,
         _add_paper,
         _add_orders,
+        _add_alerts,
     ):
         add(subcommands)
     return parser

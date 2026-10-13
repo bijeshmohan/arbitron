@@ -7,6 +7,7 @@ from arbitron.persistence.repositories import (
     SqlCandleRepository,
     SqlEquitySnapshotRepository,
     SqlFillRepository,
+    SqlHeartbeatRepository,
     SqlKillSwitchRepository,
     SqlOrderRepository,
     SqlPositionRepository,
@@ -21,6 +22,7 @@ from arbitron.ports.repositories import (
     CandleRepository,
     EquitySnapshotRepository,
     FillRepository,
+    HeartbeatRepository,
     KillSwitchRepository,
     OrderRepository,
     PositionRepository,
@@ -56,6 +58,7 @@ class SqlUnitOfWork:
         self.reconciliation_lookups: ReconciliationLookupRepository = (
             SqlReconciliationLookupRepository(self._session)
         )
+        self.heartbeats: HeartbeatRepository = SqlHeartbeatRepository(self._session)
         self.system_events: SystemEventRepository = SqlSystemEventRepository(self._session)
 
     async def __aenter__(self) -> Self:

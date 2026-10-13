@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Self, cast
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -245,6 +245,39 @@ class PaperSection(_Section):
     fee_pct: NonNegativeDecimal = Field(default=Decimal("0.1"), le=5)
 
 
+class AlertChannel(StrEnum):
+    TELEGRAM = "telegram"
+    LOG = "log"  # log only; never acceptable for unattended running
+
+
+class AlertsSection(_Section):
+    """Operator alerts (operator decisions 2026-10-13: Telegram, critical only).
+
+    Telegram credentials are secrets: ``ARBITRON_TELEGRAM_BOT_TOKEN`` and
+    ``ARBITRON_TELEGRAM_CHAT_ID`` in the environment, never in this file.
+    """
+
+    channel: AlertChannel = AlertChannel.LOG
+    min_severity: Literal["critical", "warning"] = "critical"
+    # The same alert (same event and subject) is sent at most once per window.
+    dedupe_minutes: int = Field(default=30, ge=1, le=1440)
+    max_per_hour: int = Field(default=20, ge=1, le=600)
+
+
+class MonitoringSection(_Section):
+    """Logs, metrics, health endpoints, and task supervision."""
+
+    http_host: str = "127.0.0.1"
+    http_port: int = Field(default=9108, ge=1024, le=65535)
+    log_format: Literal["json", "text"] = "json"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # Operator decision 2026-10-13: a crashed critical task is restarted with
+    # backoff up to this many times within the window; one more trips the
+    # kill switch and stops the session.
+    task_max_restarts: int = Field(default=3, ge=0, le=20)
+    task_restart_window_seconds: int = Field(default=600, ge=60, le=86_400)
+
+
 class LiveSection(_Section):
     enabled: bool = False
     acknowledgement: bool = False
@@ -259,6 +292,8 @@ class ArbitronConfig(_Section):
     execution: ExecutionSection
     market: MarketSection = MarketSection()
     paper: PaperSection = PaperSection()
+    alerts: AlertsSection = AlertsSection()
+    monitoring: MonitoringSection = MonitoringSection()
     live: LiveSection = LiveSection()
 
     @model_validator(mode="after")
@@ -315,6 +350,8 @@ class Secrets(BaseSettings):
     exchange_api_password: SecretStr | None = None
     # postgresql+psycopg://user:password@host:5432/dbname
     database_url: SecretStr | None = None
+    telegram_bot_token: SecretStr | None = None
+    telegram_chat_id: SecretStr | None = None
 
     @property
     def has_exchange_credentials(self) -> bool:
