@@ -78,6 +78,15 @@ class SqlSignalRepository:
         )
         return signal_from_row(row) if row is not None else None
 
+    async def list_recent(self, exchange_id: str, limit: int) -> Sequence[Signal]:
+        rows = await self._session.scalars(
+            select(SignalRow)
+            .where(SignalRow.exchange_id == exchange_id)
+            .order_by(SignalRow.source_candle_time.desc(), SignalRow.symbol)
+            .limit(limit)
+        )
+        return [signal_from_row(row) for row in rows]
+
 
 class SqlOrderRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -243,6 +252,12 @@ class SqlRiskDecisionRepository:
             select(RiskDecisionRow).where(RiskDecisionRow.intent_id == intent_id)
         )
         return risk_decision_from_row(row) if row is not None else None
+
+    async def list_recent(self, limit: int) -> Sequence[RiskDecision]:
+        rows = await self._session.scalars(
+            select(RiskDecisionRow).order_by(RiskDecisionRow.id.desc()).limit(limit)
+        )
+        return [risk_decision_from_row(row) for row in rows]
 
 
 def _check_event(event: OrderEvent, order: Order, *, from_status: OrderStatus | None) -> None:

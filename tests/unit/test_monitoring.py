@@ -1,4 +1,4 @@
-"""Logging redaction, health, metrics, alert mapping, Telegram notifier, HTTP endpoints."""
+"""Logging redaction, health, metrics, alert mapping, Telegram notifier, HTTP serving."""
 
 import json
 import logging
@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
 from arbitron.clocks import ManualClock
 from arbitron.domain.enums import KillSwitchState, Severity
@@ -19,7 +20,6 @@ from arbitron.monitoring.alerts import (
     format_alert,
 )
 from arbitron.monitoring.health import HealthRegistry, Readiness, TaskStatus
-from arbitron.monitoring.http import create_app
 from arbitron.monitoring.logging import REDACTED, JsonFormatter, Redactor, TextFormatter
 from arbitron.monitoring.metrics import Metrics
 from tests.factories import T0
@@ -223,46 +223,6 @@ class TestTelegramNotifier:
         assert "ALERT t: m" in caplog.text
 
 
-class TestHttp:
-    async def client(self, ready: bool) -> httpx.AsyncClient:
-        health = HealthRegistry(ManualClock(T0))
-        health.register("trading", critical=True, stale_after=timedelta(minutes=1))
-
-        async def readiness() -> Readiness:
-            return Readiness({"kill_switch": "ok" if ready else "kill switch tripped"})
-
-        app = create_app(health=health, readiness=readiness, metrics=Metrics())
-        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
-
-    async def test_health_is_always_alive(self) -> None:
-        async with await self.client(ready=False) as client:
-            response = await client.get("/health")
-
-        assert response.status_code == 200
-        assert response.json()["tasks"]["trading"]["status"] == "starting"
-
-    @pytest.mark.parametrize(("ready", "status"), [(True, 200), (False, 503)])
-    async def test_ready_status_code(self, ready: bool, status: int) -> None:
-        async with await self.client(ready=ready) as client:
-            response = await client.get("/ready")
-
-        assert response.status_code == status
-        assert response.json()["ready"] is ready
-
-    async def test_metrics_exposition(self) -> None:
-        async with await self.client(ready=True) as client:
-            response = await client.get("/metrics")
-
-        assert response.status_code == 200
-        assert response.headers["content-type"].startswith("text/plain")
-        assert "arbitron_order_outcomes_total" in response.text
-
-    async def test_no_write_endpoints_or_docs(self) -> None:
-        async with await self.client(ready=True) as client:
-            assert (await client.post("/ready")).status_code == 405
-            assert (await client.get("/docs")).status_code == 404
-
-
 def _free_port() -> int:
     import socket  # noqa: PLC0415
 
@@ -272,13 +232,14 @@ def _free_port() -> int:
 
 
 class TestServe:
-    def app(self) -> object:
-        async def readiness() -> Readiness:
-            return Readiness({"x": "ok"})
+    def app(self) -> FastAPI:
+        app = FastAPI()
 
-        return create_app(
-            health=HealthRegistry(ManualClock(T0)), readiness=readiness, metrics=Metrics()
-        )
+        @app.get("/ready")
+        async def ready() -> dict[str, bool]:  # pyright: ignore[reportUnusedFunction]
+            return {"ready": True}
+
+        return app
 
     async def test_serves_until_stopped(self) -> None:
         import asyncio  # noqa: PLC0415
@@ -288,7 +249,7 @@ class TestServe:
         port = _free_port()
         stop = asyncio.Event()
         response: httpx.Response | None = None
-        server = asyncio.create_task(serve(self.app(), host="127.0.0.1", port=port, stop=stop))  # type: ignore[arg-type]
+        server = asyncio.create_task(serve(self.app(), host="127.0.0.1", port=port, stop=stop))
         async with httpx.AsyncClient() as client:
             for _ in range(200):
                 try:
@@ -316,6 +277,6 @@ class TestServe:
             # into an ordinary error rather than let SystemExit escape.
             with pytest.raises(HttpServerError, match="could not start"):
                 await asyncio.wait_for(
-                    serve(self.app(), host="127.0.0.1", port=port, stop=asyncio.Event()),  # type: ignore[arg-type]
+                    serve(self.app(), host="127.0.0.1", port=port, stop=asyncio.Event()),
                     timeout=5,
                 )

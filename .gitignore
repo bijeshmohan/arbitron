@@ -29,3 +29,7 @@ coverage.xml
 .idea/
 .vscode/
 .DS_Store
+
+# Deployment secrets and the local deployment config (deploy/setup.sh creates them)
+deploy/secrets/
+deploy/arbitron.toml

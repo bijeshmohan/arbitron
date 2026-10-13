@@ -10,6 +10,7 @@ config, risk policy version, cost assumptions, and code version.
 import asyncio
 import hashlib
 import itertools
+import os
 import subprocess
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -39,7 +40,14 @@ class BacktestDataError(Exception):
 
 
 def code_version() -> str:
-    """Package version plus the git commit when run from a checkout (``.dirty`` if modified)."""
+    """Package version plus the git commit (``.dirty`` if modified).
+
+    Containers have no git checkout: the image records the commit at build
+    time in ``ARBITRON_BUILD_REVISION``.
+    """
+    revision = os.environ.get("ARBITRON_BUILD_REVISION")
+    if revision and revision != "unknown":
+        return f"{__version__}+g{revision}"
     root = Path(__file__).resolve().parents[3]
     try:
         sha = subprocess.run(

@@ -11,13 +11,14 @@ inconsistent limits, and any attempt to select live mode are rejected.
 
 import hashlib
 import json
+import os
 import re
 import tomllib
 from collections.abc import Mapping
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal, Self, cast
+from typing import Annotated, Any, Literal, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -367,6 +368,19 @@ class Secrets(BaseSettings):
     database_url: SecretStr | None = None
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: SecretStr | None = None
+    # Bearer token for the operational API; at least 32 characters.
+    api_token: SecretStr | None = None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: object) -> object:
+        # An empty placeholder secret file (or variable) means "not configured".
+        return None if isinstance(value, str) and not value.strip() else value
+
+    def __init__(self, **values: Any) -> None:
+        # Containers may provide secrets as files named after the variable
+        # (e.g. /run/secrets/arbitron_api_token); ARBITRON_SECRETS_DIR points there.
+        super().__init__(_secrets_dir=os.environ.get("ARBITRON_SECRETS_DIR"), **values)
 
     @property
     def has_exchange_credentials(self) -> bool:

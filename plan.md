@@ -221,6 +221,8 @@ logic stays synchronous and pure; only orchestration and adapters are
 arbitron/
 ├── pyproject.toml
 ├── uv.lock
+├── Dockerfile                  # non-root runtime image (pinned bases)
+├── .dockerignore
 ├── README.md
 ├── plan.md
 ├── .env.example
@@ -324,16 +326,17 @@ arbitron/
 │       │   ├── paper_session.py    # startup recovery + full paper loop per candle
 │       │   ├── order_resolution.py # audited operator resolution (zero-fill only)
 │       │   ├── backtesting.py      # load from DB, run, record experiments, sweeps
+│       │   ├── operations.py       # operator actions over the API (audited)
 │       ├── api/
-│       │   ├── app.py
-│       │   ├── dependencies.py
-│       │   └── routes/
+│       │   ├── app.py              # routes: reads + two audited actions
+│       │   ├── auth.py             # bearer token, constant-time compare
+│       │   └── views.py            # domain -> JSON (exact decimal strings)
 │       └── monitoring/
 │           ├── logging.py          # JSON logs + redaction
 │           ├── metrics.py          # Prometheus (dedicated registry)
 │           ├── health.py           # heartbeats, readiness checks
 │           ├── alerts.py           # Telegram notifier, dispatcher, playbook
-│           └── http.py             # /health /ready /metrics
+│           └── http.py             # uvicorn serving, bind-failure handling
 ├── typings/ccxt/               # minimal type stubs for the CCXT surface used
 ├── tests/
 │   ├── unit/
@@ -347,12 +350,15 @@ arbitron/
 │   └── verify_config.py
 ├── docs/
 │   ├── failure-matrix.md       # operator-approved failure behavior (Phase 7)
-│   └── runbooks/
+│   └── deployment.md           # deploy, API, backup/restore, rotation, incidents
 └── deploy/
-    ├── Dockerfile
     ├── compose.dev.yaml        # local PostgreSQL for development
-    ├── compose.yaml
-    └── prometheus.yml
+    ├── compose.yaml            # app, postgres, migrate, backup; monitoring profile
+    ├── setup.sh                # random secrets + config, never overwrites
+    ├── arbitron.example.toml   # deployment config template (paper)
+    ├── postgres/init-roles.sh  # owner vs least-privilege app role
+    ├── backup/                 # backup.sh loop, restore.sh verify|replace
+    └── monitoring/             # prometheus.yml, Grafana provisioning + dashboard
 ```
 
 The coding agent may adjust filenames when needed, but must preserve
@@ -1136,6 +1142,32 @@ Dashboard may be React later. First release can use API/docs and
 Grafana. Never expose unauthenticated endpoints that can alter trading
 state. Do not expose secrets or raw sensitive exchange payloads.
 
+### 16.1 Implemented (Phase 10; operator decisions 2026-10-13)
+
+-   **Authentication:** one bearer token (`ARBITRON_API_TOKEN`, at least
+    32 characters, compared in constant time) guards every endpoint
+    except `GET /health`, which returns only `{"status": "alive"}` for
+    the container health check. `paper run --follow` refuses to start
+    without a valid token. Rejected requests are counted
+    (`arbitron_api_auth_failures_total`). No OpenAPI or docs pages.
+-   **Reads:** `/ready`, `/metrics`, `/status`, `/portfolio`,
+    `/positions`, `/orders`, `/signals`, `/risk/decisions`,
+    `/system/events` (limits 1-500). Decimals are exact strings.
+-   **Actions (safer-only):** `POST /kill-switch/trip` (operator +
+    reason) and `POST /reconciliation` (operator). The actor is recorded
+    as `api:<operator>` in the kill-switch history and system events.
+    Review, arm, and order resolution remain CLI-only (host shell
+    access). Pause/resume is not exposed; tripping is the stop.
+-   **Exposure:** all ports bind to the host's `127.0.0.1`; operators use
+    an SSH tunnel. No TLS proxy.
+-   **Deployment:** `deploy/compose.yaml` (see `docs/deployment.md`):
+    non-root read-only app container, pinned image digests, secrets as
+    files (`ARBITRON_SECRETS_DIR`), migrations by the schema owner and
+    runtime as a least-privilege role (no DDL, no TRUNCATE), daily
+    verified `pg_dump` with 14-day retention and a tested
+    `restore.sh verify|replace`, optional Prometheus (bearer-token
+    scrape) and Grafana with a provisioned dashboard.
+
 ------------------------------------------------------------------------
 
 ## 17. Backtesting and paper trading
@@ -1591,12 +1623,12 @@ assumptions and costs alongside results.
 
 ### Phase 10 --- API and deployment
 
--   [ ] Add authenticated read-only operational API.
--   [ ] Add audited operator actions, especially kill switch.
--   [ ] Add Dockerfile and Compose for app + PostgreSQL.
--   [ ] Add health checks, volumes, resource limits, restart policy.
--   [ ] Document backup/restore and deployment procedure.
--   [ ] Add optional Grafana/Prometheus configuration.
+-   [x] Add authenticated read-only operational API.
+-   [x] Add audited operator actions, especially kill switch.
+-   [x] Add Dockerfile and Compose for app + PostgreSQL.
+-   [x] Add health checks, volumes, resource limits, restart policy.
+-   [x] Document backup/restore and deployment procedure.
+-   [x] Add optional Grafana/Prometheus configuration.
 
 **Acceptance:** deployment starts in paper mode, health checks work,
 data persists across container restart, and API cannot be used

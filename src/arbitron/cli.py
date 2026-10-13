@@ -504,6 +504,7 @@ def _secret_values() -> list[str]:
         secrets.exchange_api_password,
         secrets.database_url,
         secrets.telegram_bot_token,
+        secrets.api_token,
     ]
     return [v.get_secret_value() for v in values if v is not None]
 
@@ -527,6 +528,18 @@ def _require_notifier(config: ArbitronConfig) -> "Notifier":
         bot_token=secrets.telegram_bot_token.get_secret_value(),
         chat_id=secrets.telegram_chat_id.get_secret_value(),
     )
+
+
+def _require_api_token() -> str:
+    """The operational API token; ``paper run --follow`` refuses to start without it."""
+    from arbitron.api.auth import ApiTokenError, validate_token  # noqa: PLC0415
+
+    token = Secrets().api_token
+    try:
+        return validate_token(token.get_secret_value() if token is not None else None)
+    except ApiTokenError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise _CommandExit(EXIT_INVALID_CONFIG) from exc
 
 
 def _print_session_cycle(outcome: "SessionOutcome", config: ArbitronConfig) -> None:
@@ -562,6 +575,7 @@ async def _paper_run(args: argparse.Namespace) -> int:
         return EXIT_INVALID_CONFIG
     strategy = _require_strategy(config)
     notifier = _require_notifier(config) if args.follow else None
+    api_token = _require_api_token() if args.follow else None
     redactor = configure_logging(
         log_format=config.monitoring.log_format,
         level=config.monitoring.log_level,
@@ -602,6 +616,7 @@ async def _paper_run(args: argparse.Namespace) -> int:
                 lock=lock,
                 redactor=redactor,
                 on_cycle=lambda outcome: _print_session_cycle(outcome, config),
+                api_token=api_token,
             )
             metrics = runtime.metrics
 
@@ -615,8 +630,9 @@ async def _paper_run(args: argparse.Namespace) -> int:
             for sig in (signal_module.SIGINT, signal_module.SIGTERM):
                 loop.add_signal_handler(sig, stop.set)
             print(
-                f"paper session running; /health /ready /metrics on "
-                f"http://{config.monitoring.http_host}:{config.monitoring.http_port}"
+                f"paper session running; operational API on "
+                f"http://{config.monitoring.http_host}:{config.monitoring.http_port} "
+                "(bearer token required except /health)"
             )
             outcome = await runtime.run(stop)
             if outcome.failure is not None:

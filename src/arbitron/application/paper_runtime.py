@@ -9,7 +9,7 @@ Supervised tasks:
 | lock-watch     | yes      | verifies the single-instance lock every 15 s (fatal)  |
 | alerts         | no       | sends critical events to the operator channel          |
 | heartbeats     | no       | persists task health to the ``heartbeats`` table       |
-| http           | no       | ``/health``, ``/ready``, ``/metrics``                  |
+| http           | no       | operational API (``arbitron.api.app``)                 |
 
 Startup recovery (``PaperSession.start``) completes before any task runs.
 Alerts start from *before* startup, so startup discrepancies are alerted too.
@@ -21,6 +21,11 @@ import time
 from collections.abc import Callable
 from datetime import timedelta
 
+from fastapi import FastAPI
+
+from arbitron.api.app import ApiContext, create_app
+from arbitron.api.auth import validate_token
+from arbitron.application.operations import OperatorActions
 from arbitron.application.paper_session import PaperSession, SessionOutcome
 from arbitron.application.supervisor import (
     FatalTaskError,
@@ -36,7 +41,7 @@ from arbitron.execution.order_manager import Action
 from arbitron.execution.reconciler import ReconciliationReport
 from arbitron.monitoring.alerts import AlertDispatcher
 from arbitron.monitoring.health import HealthRegistry, Readiness
-from arbitron.monitoring.http import create_app, serve
+from arbitron.monitoring.http import serve
 from arbitron.monitoring.logging import Redactor
 from arbitron.monitoring.metrics import Metrics
 from arbitron.persistence.lock import InstanceLock, LockLostError
@@ -65,6 +70,7 @@ class PaperRuntime:
         redactor: Redactor | None = None,
         on_cycle: Callable[[SessionOutcome], None] | None = None,
         serve_http: bool = True,
+        api_token: str | None = None,
         restart_backoff: timedelta = timedelta(seconds=5),
     ) -> None:
         self._config = config
@@ -75,6 +81,8 @@ class PaperRuntime:
         self.metrics = metrics or Metrics()
         self._on_cycle = on_cycle
         self._serve_http = serve_http
+        # Fail at construction, not inside the supervised task: no API without a token.
+        self._api_token = validate_token(api_token) if serve_http else None
         self.health = HealthRegistry(clock)
         self.metrics.watch_heartbeats(self.health.ages)
         self.dispatcher = AlertDispatcher(
@@ -214,13 +222,43 @@ class PaperRuntime:
 
     async def _http(self, ctx: TaskContext) -> None:
         ctx.beat("serving")
-        app = create_app(health=self.health, readiness=self.readiness, metrics=self.metrics)
         await serve(
-            app,
+            self.api_app(),
             host=self._config.monitoring.http_host,
             port=self._config.monitoring.http_port,
             stop=ctx.stop,
         )
+
+    def api_app(self) -> FastAPI:
+        if self._api_token is None:
+            msg = "the operational API needs serve_http=True and a valid api_token"
+            raise RuntimeError(msg)
+        config = self._config
+        return create_app(
+            ApiContext(
+                health=self.health,
+                readiness=self.readiness,
+                metrics=self.metrics,
+                token=self._api_token,
+                uow_factory=self._uow_factory,
+                balances=self.session.broker.fetch_balances,
+                operator=OperatorActions(
+                    kill_switch=self.session.kill_switch,
+                    reconcile=self._operator_reconcile,
+                    uow_factory=self._uow_factory,
+                    clock=self._clock,
+                ),
+                mode=config.app.mode.value,
+                exchange_id=config.exchange.id,
+                symbols=config.exchange.symbols,
+                quote_currency=config.exchange.quote_currency,
+            )
+        )
+
+    async def _operator_reconcile(self) -> ReconciliationReport:
+        report = await self.session.reconcile_now()
+        self._observe_reconciliation(report)
+        return report
 
     # --- readiness and metrics -----------------------------------------------------
 

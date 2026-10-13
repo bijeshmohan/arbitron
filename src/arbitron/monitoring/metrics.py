@@ -109,6 +109,16 @@ class Metrics:
             "arbitron_task_restarts_total", "Supervised task restarts", ["task"], registry=r
         )
         self.alerts = Counter("arbitron_alerts_total", "Alerts by outcome", ["outcome"], registry=r)
+        # Operational API
+        self.api_auth_failures = Counter(
+            "arbitron_api_auth_failures_total", "API requests rejected for auth", registry=r
+        )
+        self.operator_actions = Counter(
+            "arbitron_operator_actions_total",
+            "Operator actions via the API",
+            ["action"],
+            registry=r,
+        )
 
     def watch_heartbeats(self, ages: Callable[[], Mapping[str, float]]) -> None:
         self.registry.register(_HeartbeatCollector(ages))

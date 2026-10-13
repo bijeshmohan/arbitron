@@ -184,14 +184,27 @@ has any record of the order: fills only ever come from venue data.
   crash trips the kill switch and stops the session.
 - SIGINT and SIGTERM shut it down cleanly.
 
-Endpoints are served on `127.0.0.1:9108`, configured under `[monitoring]`:
+The operational API is served on `127.0.0.1:9108`, configured under
+`[monitoring]`. It needs a bearer token: set `ARBITRON_API_TOKEN` to at least
+32 random characters (for example `openssl rand -hex 32`). `paper run --follow`
+refuses to start without one.
 
-- `GET /health`: liveness, with per-task heartbeats.
-- `GET /ready`: 200 only when it's safe to trade. Otherwise 503 with the
-  failing checks (for example, the kill switch isn't armed).
-- `GET /metrics`: Prometheus metrics covering venue calls, data freshness,
+- `GET /health` is the only endpoint that works without the token. It
+  returns `{"status": "alive"}` and nothing else.
+- `GET /ready` returns 200 only when it's safe to trade. Otherwise it returns
+  503 with the failing checks (for example, the kill switch isn't armed).
+- `GET /status`, `/portfolio`, `/positions`, `/orders`, `/signals`,
+  `/risk/decisions` and `/system/events` are read-only views of the bot's
+  state.
+- `GET /metrics` serves Prometheus metrics: venue calls, data freshness,
   signals, orders, risk rejections, reconciliation, equity, kill-switch state
   and heartbeats.
+- `POST /kill-switch/trip` and `POST /reconciliation` are the only actions.
+  Both are audited. Arming and order resolution are CLI-only.
+
+```sh
+curl -H "Authorization: Bearer $ARBITRON_API_TOKEN" http://127.0.0.1:9108/status
+```
 
 Logs are JSON lines on stderr, with secrets redacted.
 
@@ -211,6 +224,19 @@ Each alert says what happened, what the bot already did, and what to do next.
 With `channel = "telegram"`, `paper run --follow` refuses to start without
 those two secrets. The `log` channel only logs alerts; use it for trying
 things out, not for unattended running.
+
+## Deployment
+
+`deploy/compose.yaml` runs the app, PostgreSQL and daily backups as one
+Docker Compose stack, in paper mode. Prometheus and Grafana are optional.
+Every port binds to localhost; you reach them over an SSH tunnel. Secrets are
+files and are never environment variables.
+
+    deploy/setup.sh
+    docker compose -f deploy/compose.yaml up -d --build
+
+[docs/deployment.md](docs/deployment.md) covers first deployment, arming,
+the API, upgrades, backup and restore, secret rotation and incidents.
 
 ## Backtesting
 

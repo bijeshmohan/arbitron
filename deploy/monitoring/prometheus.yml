@@ -1,0 +1,13 @@
+# Scrapes the arbitron app over the compose network with the API bearer token.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: arbitron
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/arbitron_api_token
+    static_configs:
+      - targets: ["app:9108"]

@@ -1,53 +1,9 @@
-"""Read-only operational endpoints: ``/health``, ``/ready``, ``/metrics`` (plan §16).
-
-Bound to ``127.0.0.1`` by default. Nothing here can change trading state;
-authenticated operator actions arrive in Phase 10.
-
-- ``/health``: liveness. 200 while the process and supervisor are running,
-  with per-task heartbeat details.
-- ``/ready``: 200 only when it is safe to trade (startup done, kill switch
-  armed, reconciliation clean, market data ok, critical tasks beating);
-  otherwise 503 with the failing checks.
-- ``/metrics``: Prometheus exposition.
-"""
+"""Serving the operational API with uvicorn (the app itself is ``arbitron.api.app``)."""
 
 import asyncio
-from collections.abc import Awaitable, Callable
 
 import uvicorn
-from fastapi import FastAPI, Response
-from fastapi.responses import JSONResponse
-from prometheus_client import CONTENT_TYPE_LATEST
-
-from arbitron.monitoring.health import HealthRegistry, Readiness
-from arbitron.monitoring.metrics import Metrics
-
-
-def create_app(
-    *,
-    health: HealthRegistry,
-    readiness: Callable[[], Awaitable[Readiness]],
-    metrics: Metrics,
-) -> FastAPI:
-    app = FastAPI(title="arbitron", docs_url=None, redoc_url=None, openapi_url=None)
-
-    @app.get("/health")
-    async def get_health() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        return JSONResponse({"status": "alive", "tasks": health.view()})
-
-    @app.get("/ready")
-    async def get_ready() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        result = await readiness()
-        return JSONResponse(
-            {"ready": result.ready, "checks": dict(result.checks)},
-            status_code=200 if result.ready else 503,
-        )
-
-    @app.get("/metrics")
-    async def get_metrics() -> Response:  # pyright: ignore[reportUnusedFunction]
-        return Response(metrics.render(), media_type=CONTENT_TYPE_LATEST)
-
-    return app
+from fastapi import FastAPI
 
 
 class HttpServerError(RuntimeError):

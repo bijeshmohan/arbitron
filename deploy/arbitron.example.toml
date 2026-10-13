@@ -1,0 +1,112 @@
+# Deployment configuration template (paper mode) for deploy/compose.yaml.
+# deploy/setup.sh copies it to deploy/arbitron.toml (gitignored); edit that copy.
+# Values illustrate the configuration shape only; they are NOT recommended
+# financial limits. Set your own before relying on the results.
+#
+# Financial values are quoted strings so they parse exactly as Decimal;
+# unquoted floats are rejected.
+
+[app]
+mode = "paper"
+environment = "production"
+timezone = "UTC"
+
+[exchange]
+id = "binance"
+sandbox = false
+spot_only = true
+symbols = ["BTC/USDT"]
+request_timeout_ms = 10000
+
+[strategy]
+id = "sma_cross"
+version = "1"
+timeframe = "5m"
+enabled = true
+
+# sma_cross is a software integration fixture, not a trading recommendation.
+[strategy.parameters]
+fast = 10
+slow = 30
+
+# Risk limits. Example values for paper trading only; they are NOT recommended
+# financial limits. Amounts are in the quote currency (USDT here).
+[risk]
+trading_enabled = true
+max_order_notional = "50"
+max_asset_exposure = "100"
+max_total_exposure = "100"
+max_open_orders = 2
+max_orders_per_hour = 6
+max_daily_loss = "10"
+max_drawdown_pct = "5"
+max_spread_pct = "0.2"
+min_quote_reserve = "10"
+max_market_data_age_seconds = 600
+max_ticker_age_seconds = 10
+
+# Fixed quote amount per entry; buy only when flat, sell the whole position.
+# Orders are immediate-or-cancel limit orders within max_slippage_pct of the book.
+[sizing]
+entry_notional = "25"
+max_slippage_pct = "0.1"
+assumed_fee_pct = "0.1"
+
+[execution]
+allow_market_orders = false
+submission_timeout_seconds = 15
+reconciliation_interval_seconds = 60
+# Unknown submissions: NOT_PLACED only after the settle window and two
+# not-found lookups; escalate to the operator after the max age.
+unknown_order_settle_seconds = 30
+unknown_order_max_age_seconds = 900
+
+# Optional; these are the defaults.
+[market]
+close_grace_seconds = 5
+backfill_candles = 1000
+max_pages_per_sync = 20
+metadata_max_age_seconds = 3600
+max_clock_skew_ms = 1000
+request_concurrency = 2
+read_retry_attempts = 3
+
+# Paper venue simulation (paper mode only). These are the defaults.
+# Fills: best ask/bid moved against the order by slippage_bps, never past the
+# limit (IOC orders that would breach it expire). Fees in the received asset.
+[paper]
+account = "default"
+starting_balance = "1000"
+slippage_bps = "5"
+fee_pct = "0.1"
+
+# Backtest cost assumptions. These are the defaults (same costs as [paper]).
+# Fills happen at the next candle's open, around a synthetic quote of spread_bps.
+[backtest]
+starting_balance = "1000"
+spread_bps = "1"
+slippage_bps = "5"
+fee_pct = "0.1"
+
+# Operator alerts. An unattended deployment needs "telegram", with the bot
+# token and chat id in deploy/secrets/arbitron_telegram_bot_token and
+# deploy/secrets/arbitron_telegram_chat_id. The app refuses to start without them.
+[alerts]
+channel = "telegram"
+min_severity = "critical"
+dedupe_minutes = 30
+max_per_hour = 20
+
+# Logs, metrics, operational API, task supervision.
+# 0.0.0.0 inside the container; compose publishes it on the host's 127.0.0.1 only.
+[monitoring]
+http_host = "0.0.0.0"
+http_port = 9108
+log_format = "json"
+log_level = "INFO"
+task_max_restarts = 3
+task_restart_window_seconds = 600
+
+[live]
+enabled = false
+acknowledgement = false

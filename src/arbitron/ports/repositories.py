@@ -114,6 +114,10 @@ class SignalRepository(Protocol):
         """The signal with the latest source candle for this config and market."""
         ...
 
+    async def list_recent(self, exchange_id: str, limit: int) -> Sequence[Signal]:
+        """Newest source candle first."""
+        ...
+
 
 class OrderRepository(Protocol):
     async def count_created_since(self, exchange_id: str, since: datetime) -> int:
@@ -172,6 +176,10 @@ class RiskDecisionRepository(Protocol):
         ...
 
     async def get_for_intent(self, intent_id: UUID) -> RiskDecision | None: ...
+
+    async def list_recent(self, limit: int) -> Sequence[RiskDecision]:
+        """Most recently recorded first."""
+        ...
 
 
 class KillSwitchRepository(Protocol):

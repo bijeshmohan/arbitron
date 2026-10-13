@@ -42,3 +42,27 @@ jobs:
 
       - name: Test
         run: uv run pytest --cov --cov-report=term-missing
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate compose file
+        run: |
+          mkdir -p deploy/secrets
+          for s in postgres_password app_db_password owner_database_url app_database_url \
+                   arbitron_api_token arbitron_telegram_bot_token arbitron_telegram_chat_id \
+                   grafana_admin_password; do echo placeholder > "deploy/secrets/$s"; done
+          cp deploy/arbitron.example.toml deploy/arbitron.toml
+          docker compose -f deploy/compose.yaml --profile monitoring config --quiet
+
+      - name: Build image
+        run: docker build --build-arg REVISION="${GITHUB_SHA::12}" -t arbitron:ci .
+
+      - name: Smoke test
+        run: |
+          docker run --rm arbitron:ci --version
+          docker run --rm -i arbitron:ci check-config /dev/stdin < deploy/arbitron.example.toml
+          test "$(docker run --rm --entrypoint id arbitron:ci -u)" = 10001

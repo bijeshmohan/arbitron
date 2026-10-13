@@ -1,0 +1,212 @@
+# Paper-trading deployment: app + PostgreSQL + daily backups.
+# Optional Prometheus + Grafana: add `--profile monitoring`.
+#
+#   deploy/setup.sh                      # once: secrets + config
+#   docker compose -f deploy/compose.yaml up -d --build
+#
+# Every port binds to 127.0.0.1 only; reach them through an SSH tunnel
+# (docs/deployment.md). Secrets are files in deploy/secrets/, mounted at
+# /run/secrets; nothing secret is passed as an environment variable.
+
+name: arbitron
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  logging: *logging
+
+x-arbitron: &arbitron
+  <<: *hardening
+  image: arbitron:${ARBITRON_TAG:-local}
+  build:
+    context: ..
+    args:
+      REVISION: ${ARBITRON_REVISION:-unknown}
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  environment:
+    ARBITRON_SECRETS_DIR: /run/secrets
+
+services:
+  postgres:
+    <<: *hardening
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: arbitron
+      POSTGRES_DB: arbitron
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      ARBITRON_APP_PASSWORD_FILE: /run/secrets/app_db_password
+    secrets:
+      - postgres_password
+      - app_db_password
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arbitron -d arbitron"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  # Applies migrations as the schema owner, then exits. The app itself runs
+  # as arbitron_app, which can read and write rows but not change the schema.
+  migrate:
+    <<: *arbitron
+    command: ["db", "upgrade"]
+    restart: "no"
+    secrets:
+      - source: owner_database_url
+        target: arbitron_database_url
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    <<: *arbitron
+    command: ["paper", "run", "/config/arbitron.toml", "--follow"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    secrets:
+      - source: app_database_url
+        target: arbitron_database_url
+      - arbitron_api_token
+      - arbitron_telegram_bot_token
+      - arbitron_telegram_chat_id
+    volumes:
+      - ./arbitron.toml:/config/arbitron.toml:ro
+    ports:
+      - "127.0.0.1:9108:9108"
+    healthcheck:
+      # Liveness only (unauthenticated). Readiness is GET /ready with the token.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9108/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768m
+
+  backup:
+    <<: *hardening
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    entrypoint: ["/scripts/backup.sh"]
+    restart: unless-stopped  # starts as root to own the volume, then runs as postgres
+    environment:
+      BACKUP_INTERVAL_SECONDS: "86400"
+      BACKUP_RETENTION_DAYS: "14"
+    secrets:
+      - postgres_password
+    volumes:
+      - backups:/backups
+      - ./backup:/scripts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+
+  prometheus:
+    <<: *hardening
+    profiles: ["monitoring"]
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    secrets:
+      - arbitron_api_token
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+
+  grafana:
+    <<: *hardening
+    profiles: ["monitoring"]
+    image: grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    secrets:
+      - grafana_admin_password
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  app_db_password:
+    file: ./secrets/app_db_password
+  owner_database_url:
+    file: ./secrets/owner_database_url
+  app_database_url:
+    file: ./secrets/app_database_url
+  arbitron_api_token:
+    file: ./secrets/arbitron_api_token
+  arbitron_telegram_bot_token:
+    file: ./secrets/arbitron_telegram_bot_token
+  arbitron_telegram_chat_id:
+    file: ./secrets/arbitron_telegram_chat_id
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password
+
+volumes:
+  pgdata:
+  backups:
+  promdata:
+  grafanadata:
