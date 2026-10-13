@@ -6,9 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from arbitron.persistence.repositories import (
     SqlCandleRepository,
     SqlEquitySnapshotRepository,
+    SqlExperimentRepository,
     SqlFillRepository,
     SqlHeartbeatRepository,
     SqlKillSwitchRepository,
+    SqlMarketRepository,
     SqlOrderRepository,
     SqlPositionRepository,
     SqlReconciliationLookupRepository,
@@ -21,9 +23,11 @@ from arbitron.persistence.repositories import (
 from arbitron.ports.repositories import (
     CandleRepository,
     EquitySnapshotRepository,
+    ExperimentRepository,
     FillRepository,
     HeartbeatRepository,
     KillSwitchRepository,
+    MarketRepository,
     OrderRepository,
     PositionRepository,
     ReconciliationLookupRepository,
@@ -45,6 +49,8 @@ class SqlUnitOfWork:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session = session_factory()
         self._entered = False
+        self.markets: MarketRepository = SqlMarketRepository(self._session)
+        self.experiments: ExperimentRepository = SqlExperimentRepository(self._session)
         self.candles: CandleRepository = SqlCandleRepository(self._session)
         self.strategy_configs: StrategyConfigRepository = SqlStrategyConfigRepository(self._session)
         self.strategy_cursors: StrategyCursorRepository = SqlStrategyCursorRepository(self._session)

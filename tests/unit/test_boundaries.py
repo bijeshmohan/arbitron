@@ -45,6 +45,19 @@ _CHECK = textwrap.dedent(
         ("arbitron.risk", ("arbitron.risk", "arbitron.domain")),
         ("arbitron.portfolio", ("arbitron.portfolio", "arbitron.domain")),
         ("arbitron.simulation", ("arbitron.simulation", "arbitron.domain")),
+        # The backtest engine reuses only the pure decision code: no I/O.
+        (
+            "arbitron.backtest",
+            (
+                "arbitron.backtest",
+                "arbitron.domain",
+                "arbitron.strategy",
+                "arbitron.sizing",
+                "arbitron.risk",
+                "arbitron.simulation",
+                "arbitron.portfolio",
+            ),
+        ),
     ],
 )
 def test_package_imports_only_stdlib_and_allowed_internals(

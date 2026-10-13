@@ -26,10 +26,13 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncEngine
 
+    from arbitron.application.backtesting import BacktestService
     from arbitron.application.kill_switch import KillSwitchService
     from arbitron.application.paper_session import PaperSession, SessionOutcome
+    from arbitron.domain.experiments import ExperimentRecord
     from arbitron.domain.risk import KillSwitch
     from arbitron.domain.signals import Signal
+    from arbitron.domain.strategies import ParameterValue
     from arbitron.exchange.ccxt_adapter import CcxtMarketData
     from arbitron.execution.reconciler import ReconciliationReport
     from arbitron.market.service import CycleOutcome
@@ -683,6 +686,212 @@ async def _alerts_test(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _parameter_value(text: str) -> "ParameterValue":
+    """``10`` -> int, ``true``/``false`` -> bool, anything else -> str (never float)."""
+    lowered = text.strip().lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    try:
+        return int(text)
+    except ValueError:
+        return text
+
+
+def _parse_params(items: "Sequence[str]", *, grid: bool) -> "dict[str, list[ParameterValue]]":
+    parsed: dict[str, list[ParameterValue]] = {}
+    for item in items:
+        name, sep, values = item.partition("=")
+        if not sep or not name.strip() or not values.strip():
+            print(f"error: --param must look like name=value, got {item!r}", file=sys.stderr)
+            raise _CommandExit(EXIT_INVALID_CONFIG)
+        parts = values.split(",") if grid else [values]
+        parsed[name.strip()] = [_parameter_value(v) for v in parts]
+    return parsed
+
+
+def _require_range(args: argparse.Namespace) -> "tuple[datetime, datetime]":
+    if args.end <= args.start:
+        print("error: --end must be after --start", file=sys.stderr)
+        raise _CommandExit(EXIT_INVALID_CONFIG)
+    return args.start, args.end
+
+
+async def _market_backfill(args: argparse.Namespace) -> int:
+    from arbitron.domain.market import Timeframe  # noqa: PLC0415
+    from arbitron.market.backfill import Backfiller, BackfillResult  # noqa: PLC0415
+    from arbitron.ports.errors import VenueError  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    start, end = _require_range(args)
+    symbols = (args.symbol,) if args.symbol else tuple(config.exchange.symbols)
+    if any(s not in config.exchange.symbols for s in symbols):
+        print(f"error: {args.symbol} is not in the configured symbols", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    async with _runtime(config, venue=True) as rt:
+        assert rt.market_data is not None  # noqa: S101 - venue=True
+        backfiller = Backfiller(
+            market_data=rt.market_data,
+            uow_factory=rt.uow_factory,
+            clock=rt.clock,
+            exchange_id=config.exchange.id,
+            timeframe=Timeframe(config.strategy.timeframe),
+        )
+
+        def progress(result: BackfillResult) -> None:
+            print(f"  {result.symbol}: {result.fetched} candles ({result.pages} pages)", end="\r")
+            sys.stdout.flush()
+
+        try:
+            await backfiller.store_markets(symbols)
+            for symbol in symbols:
+                result = await backfiller.run(symbol, start, end, progress=progress)
+                print(
+                    f"{symbol} [{config.strategy.timeframe}] {result.start.isoformat()} .. "
+                    f"{end.isoformat()}: fetched={result.fetched} written={result.written} "
+                    f"pages={result.pages} gaps={len(result.gaps)}"
+                )
+                for first, last in result.gaps[:20]:
+                    print(f"  ~ gap: {first.isoformat()} .. {last.isoformat()}")
+        except VenueError as exc:
+            print(f"error: venue request failed: {exc}", file=sys.stderr)
+            return EXIT_VENUE_ERROR
+    return EXIT_OK
+
+
+def _write_reports(out: "Path | None", record: "ExperimentRecord") -> None:
+    from arbitron.backtest.report import to_json, to_markdown  # noqa: PLC0415
+
+    if out is None:
+        return
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"backtest-{record.id}.json").write_text(to_json(record))
+    (out / f"backtest-{record.id}.md").write_text(to_markdown(record))
+    print(f"  reports: {out / f'backtest-{record.id}'}.{{json,md}}")
+
+
+@asynccontextmanager
+async def _backtest_service(
+    args: argparse.Namespace,
+) -> AsyncGenerator["tuple[ArbitronConfig, BacktestService, _Runtime]"]:
+    from arbitron.application.backtesting import BacktestService  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    _require_strategy(config)
+    async with _runtime(config, venue=False) as rt:
+        yield config, BacktestService(config, uow_factory=rt.uow_factory, clock=rt.clock), rt
+
+
+async def _backtest_run(args: argparse.Namespace) -> int:
+    from arbitron.application.backtesting import BacktestDataError  # noqa: PLC0415
+    from arbitron.backtest.report import to_markdown  # noqa: PLC0415
+
+    start, end = _require_range(args)
+    params = {k: v[0] for k, v in _parse_params(args.param, grid=False).items()}
+    async with _backtest_service(args) as (_, service, _rt):
+        try:
+            run = await service.run(start=start, end=end, parameters=params)
+        except BacktestDataError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_INVALID_STATE
+    print(to_markdown(run.record))
+    _write_reports(args.out, run.record)
+    return EXIT_OK
+
+
+async def _backtest_sweep(args: argparse.Namespace) -> int:
+    from arbitron.application.backtesting import BacktestDataError  # noqa: PLC0415
+    from arbitron.backtest.report import sweep_table  # noqa: PLC0415
+
+    start, end = _require_range(args)
+    split = args.split
+    if not start < split < end:
+        print("error: --split must fall between --start and --end", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    grid = _parse_params(args.param, grid=True)
+    async with _backtest_service(args) as (_, service, _rt):
+        try:
+            rows = await service.sweep(start=start, split=split, end=end, grid=grid)
+        except BacktestDataError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_INVALID_STATE
+    print(f"in-sample {start.date()}..{split.date()}, out-of-sample {split.date()}..{end.date()}")
+    print(sweep_table(rows))
+    return EXIT_OK
+
+
+async def _backtest_list(args: argparse.Namespace) -> int:
+    async with _backtest_service(args) as (_, _service, rt), rt.uow_factory() as tx:
+        records = await tx.experiments.list_recent(args.limit)
+    for r in records:
+        print(
+            f"{r.id} {r.created_at.isoformat()} {r.label} {r.strategy_id} "
+            f"{dict(r.parameters)} {r.start.date()}..{r.end.date()} "
+            f"return={r.metrics.get('total_return_pct')}% "
+            f"max_dd={r.metrics.get('max_drawdown_pct')}%"
+        )
+    if not records:
+        print("no recorded backtests")
+    return EXIT_OK
+
+
+async def _backtest_show(args: argparse.Namespace) -> int:
+    from uuid import UUID  # noqa: PLC0415
+
+    from arbitron.backtest.report import to_markdown  # noqa: PLC0415
+
+    async with _backtest_service(args) as (_, _service, rt), rt.uow_factory() as tx:
+        record = await tx.experiments.get(UUID(args.id))
+    if record is None:
+        print(f"error: no backtest {args.id}", file=sys.stderr)
+        return EXIT_INVALID_STATE
+    print(to_markdown(record))
+    _write_reports(args.out, record)
+    return EXIT_OK
+
+
+def _add_backtest(subcommands: "_Subcommands") -> None:
+    backtest = subcommands.add_parser(
+        "backtest", help="historical simulation (simulated results only)"
+    )
+    commands = backtest.add_subparsers(
+        dest="backtest_command", required=True, metavar="BACKTEST_COMMAND"
+    )
+
+    def ranged(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("config", type=Path, help="path to a TOML config file")
+        parser.add_argument("--start", type=_utc_timestamp, required=True, help="ISO-8601 UTC")
+        parser.add_argument(
+            "--end", type=_utc_timestamp, required=True, help="ISO-8601 UTC, exclusive"
+        )
+
+    run = commands.add_parser("run", help="backtest the configured strategy over stored candles")
+    ranged(run)
+    run.add_argument("--param", action="append", default=[], help="override, e.g. fast=12")
+    run.add_argument("--out", type=Path, help="also write JSON and Markdown reports here")
+    run.set_defaults(handler=_backtest_run)
+
+    sweep = commands.add_parser(
+        "sweep", help="parameter grid on separate in-sample and out-of-sample periods"
+    )
+    ranged(sweep)
+    sweep.add_argument("--split", type=_utc_timestamp, required=True, help="in-sample ends here")
+    sweep.add_argument(
+        "--param", action="append", default=[], help="grid, e.g. fast=5,10,20 (repeatable)"
+    )
+    sweep.set_defaults(handler=_backtest_sweep)
+
+    listing = commands.add_parser("list", help="recent recorded backtests")
+    listing.add_argument("config", type=Path, help="path to a TOML config file")
+    listing.add_argument("--limit", type=int, default=20)
+    listing.set_defaults(handler=_backtest_list)
+
+    show = commands.add_parser("show", help="report for a recorded backtest")
+    show.add_argument("config", type=Path, help="path to a TOML config file")
+    show.add_argument("id", help="backtest id (from `backtest list`)")
+    show.add_argument("--out", type=Path, help="also write JSON and Markdown reports here")
+    show.set_defaults(handler=_backtest_show)
+
+
 def _add_alerts(subcommands: "_Subcommands") -> None:
     alerts = subcommands.add_parser("alerts", help="operator alert channel")
     commands = alerts.add_subparsers(dest="alerts_command", required=True, metavar="ALERTS_COMMAND")
@@ -763,6 +972,7 @@ def build_parser() -> argparse.ArgumentParser:
         _add_paper,
         _add_orders,
         _add_alerts,
+        _add_backtest,
     ):
         add(subcommands)
     return parser
@@ -802,6 +1012,16 @@ def _add_market(subcommands: "_Subcommands") -> None:
         help="candles of contiguous history the quality gate requires (default 100)",
     )
     sync.set_defaults(handler=_market_sync)
+    backfill = market_commands.add_parser(
+        "backfill", help="store historical closed candles (and market rules) for backtests"
+    )
+    backfill.add_argument("config", type=Path, help="path to a TOML config file")
+    backfill.add_argument("--start", type=_utc_timestamp, required=True, help="ISO-8601 UTC")
+    backfill.add_argument(
+        "--end", type=_utc_timestamp, required=True, help="ISO-8601 UTC, exclusive"
+    )
+    backfill.add_argument("--symbol", help="defaults to every configured symbol")
+    backfill.set_defaults(handler=_market_backfill)
 
 
 def _add_strategy(subcommands: "_Subcommands") -> None:

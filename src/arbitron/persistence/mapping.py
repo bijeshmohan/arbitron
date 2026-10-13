@@ -1,9 +1,11 @@
 """Row <-> domain conversions. Every read re-validates through domain constructors."""
 
+from datetime import datetime
 from typing import Any
 
 from arbitron.domain.enums import (
     KillSwitchState,
+    MarketType,
     OrderStatus,
     OrderType,
     Severity,
@@ -12,8 +14,9 @@ from arbitron.domain.enums import (
 )
 from arbitron.domain.errors import DomainValidationError
 from arbitron.domain.events import OrderEvent, SystemEvent
+from arbitron.domain.experiments import ExperimentRecord
 from arbitron.domain.fills import ExchangeTrade, Fee, Fill
-from arbitron.domain.market import Candle, Timeframe
+from arbitron.domain.market import Candle, Market, Timeframe
 from arbitron.domain.orders import Order, OrderIntent
 from arbitron.domain.portfolio import EquitySnapshot
 from arbitron.domain.positions import Position
@@ -21,10 +24,12 @@ from arbitron.domain.risk import KillSwitch, RiskDecision, RiskReason
 from arbitron.domain.signals import Signal
 from arbitron.domain.strategies import StrategyConfig, StrategyCursor
 from arbitron.persistence.tables import (
+    BacktestRunRow,
     CandleRow,
     EquitySnapshotRow,
     FillRow,
     KillSwitchRow,
+    MarketRow,
     OrderEventRow,
     OrderRow,
     PositionRow,
@@ -34,6 +39,83 @@ from arbitron.persistence.tables import (
     StrategyCursorRow,
     SystemEventRow,
 )
+
+
+def market_values(market: Market, observed_at: datetime) -> dict[str, Any]:
+    return {
+        "exchange_id": market.exchange_id,
+        "symbol": market.symbol,
+        "base": market.base,
+        "quote": market.quote,
+        "market_type": market.market_type.value,
+        "amount_step": market.amount_step,
+        "price_step": market.price_step,
+        "min_amount": market.min_amount,
+        "min_cost": market.min_cost,
+        "active": market.active,
+        "observed_at": observed_at,
+    }
+
+
+def market_from_row(row: MarketRow) -> Market:
+    return Market(
+        exchange_id=row.exchange_id,
+        symbol=row.symbol,
+        base=row.base,
+        quote=row.quote,
+        market_type=MarketType(row.market_type),
+        amount_step=row.amount_step,
+        price_step=row.price_step,
+        min_amount=row.min_amount,
+        min_cost=row.min_cost,
+        active=row.active,
+    )
+
+
+def experiment_values(record: ExperimentRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "created_at": record.created_at,
+        "label": record.label,
+        "exchange_id": record.exchange_id,
+        "symbols": list(record.symbols),
+        "timeframe": record.timeframe,
+        "start": record.start,
+        "end": record.end,
+        "strategy_id": record.strategy_id,
+        "strategy_version": record.strategy_version,
+        "config_hash": record.config_hash,
+        "risk_policy_version": record.risk_policy_version,
+        "code_version": record.code_version,
+        "data_fingerprint": record.data_fingerprint,
+        "candle_count": record.candle_count,
+        "assumptions": dict(record.assumptions),
+        "parameters": dict(record.parameters),
+        "metrics": dict(record.metrics),
+    }
+
+
+def experiment_from_row(row: BacktestRunRow) -> ExperimentRecord:
+    return ExperimentRecord(
+        id=row.id,
+        created_at=row.created_at,
+        label=row.label,
+        exchange_id=row.exchange_id,
+        symbols=tuple(row.symbols),
+        timeframe=row.timeframe,
+        start=row.start,
+        end=row.end,
+        strategy_id=row.strategy_id,
+        strategy_version=row.strategy_version,
+        config_hash=row.config_hash,
+        risk_policy_version=row.risk_policy_version,
+        code_version=row.code_version,
+        data_fingerprint=row.data_fingerprint,
+        candle_count=row.candle_count,
+        assumptions=row.assumptions,
+        parameters=row.parameters,
+        metrics=row.metrics,
+    )
 
 
 def candle_values(candle: Candle) -> dict[str, Any]:

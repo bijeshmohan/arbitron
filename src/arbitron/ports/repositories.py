@@ -19,8 +19,9 @@ from uuid import UUID
 
 from arbitron.domain.enums import Severity
 from arbitron.domain.events import OrderEvent, SystemEvent
+from arbitron.domain.experiments import ExperimentRecord
 from arbitron.domain.fills import Fill
-from arbitron.domain.market import Candle, Timeframe
+from arbitron.domain.market import Candle, Market, Timeframe
 from arbitron.domain.orders import Order
 from arbitron.domain.portfolio import EquitySnapshot
 from arbitron.domain.positions import Position
@@ -36,6 +37,22 @@ class ConcurrencyConflict(Exception):  # noqa: N818 - domain term, not a generic
 class ConflictingRecordError(Exception):
     """A record with the same identity exists with different content, or a
     write-once record was written twice."""
+
+
+class MarketRepository(Protocol):
+    async def save(self, market: Market, *, observed_at: datetime) -> None:
+        """Insert or replace the latest known rules for this market."""
+        ...
+
+    async def get(self, exchange_id: str, symbol: str) -> Market | None: ...
+
+
+class ExperimentRepository(Protocol):
+    async def add(self, record: ExperimentRecord) -> None: ...
+
+    async def get(self, experiment_id: UUID) -> ExperimentRecord | None: ...
+
+    async def list_recent(self, limit: int) -> Sequence[ExperimentRecord]: ...
 
 
 class CandleRepository(Protocol):
@@ -225,6 +242,8 @@ class HeartbeatRepository(Protocol):
 
 
 class UnitOfWork(Protocol):
+    markets: MarketRepository
+    experiments: ExperimentRepository
     candles: CandleRepository
     strategy_configs: StrategyConfigRepository
     strategy_cursors: StrategyCursorRepository

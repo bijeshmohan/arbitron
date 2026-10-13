@@ -255,6 +255,7 @@ arbitron/
 │       │   ├── risk.py             # risk decisions, reason codes, kill switch
 │       │   ├── strategies.py       # config snapshots, evaluation cursors
 │       │   ├── snapshot.py         # TradingSnapshot read by sizing and risk
+│       │   ├── experiments.py      # ExperimentRecord (backtest provenance)
 │       │   └── events.py
 │       ├── ports/
 │       │   ├── errors.py           # venue error taxonomy (§8.1)
@@ -274,7 +275,8 @@ arbitron/
 │       │   ├── collector.py        # closed-candle ingestion
 │       │   ├── candles.py          # alignment, series checks, gaps
 │       │   ├── freshness.py        # data-quality gate (§9.2)
-│       │   └── service.py          # sync cycle / follow loop
+│       │   ├── service.py          # sync cycle / follow loop
+│       │   └── backfill.py         # paged historical candles + market rules
 │       ├── strategy/               # stdlib + domain imports only (tested)
 │       │   ├── base.py             # Strategy protocol, context, proposals
 │       │   ├── evaluation.py       # shared live/replay evaluation, replay()
@@ -293,13 +295,15 @@ arbitron/
 │       ├── portfolio/              # stdlib + domain imports only (tested)
 │       │   └── accounting.py       # weighted average cost from fills
 │       ├── simulation/             # stdlib + domain imports only (tested)
-│       │   └── fill_model.py       # top of book + slippage, fees in received asset
+│       │   ├── fill_model.py       # top of book + slippage, fees in received asset
+│       │   ├── settlement.py       # balance deltas per fill (paper + backtest)
+│       │   └── quotes.py           # synthetic bid/ask from a candle price
 │       ├── paper/
 │       │   └── broker.py           # simulated venue (ExecutionPort + AccountPort)
-│       ├── backtest/
-│       │   ├── engine.py
-│       │   ├── broker.py
-│       │   └── metrics.py
+│       ├── backtest/               # stdlib + domain imports only (tested)
+│       │   ├── engine.py           # candle loop, next-open fills, risk + kill switch
+│       │   ├── metrics.py          # return, drawdown, volatility, costs, benchmark
+│       │   └── report.py           # JSON / Markdown reports, sweep table
 │       ├── persistence/
 │       │   ├── db.py               # engine/sessions, schema verification
 │       │   ├── lock.py             # advisory-lock single-instance guard
@@ -319,6 +323,7 @@ arbitron/
 │       │   ├── snapshot_builder.py # TradingSnapshot + equity history
 │       │   ├── paper_session.py    # startup recovery + full paper loop per candle
 │       │   ├── order_resolution.py # audited operator resolution (zero-fill only)
+│       │   ├── backtesting.py      # load from DB, run, record experiments, sweeps
 │       ├── api/
 │       │   ├── app.py
 │       │   ├── dependencies.py
@@ -1153,6 +1158,44 @@ state. Do not expose secrets or raw sensitive exchange payloads.
 -   Persist experiment config, data range, code/strategy version, and
     outputs.
 
+### 17.1.1 Implemented backtester (Phase 9; operator decisions 2026-10-13)
+
+-   **Data:** `arbitron market backfill` pages closed candles from the
+    venue into the same `candles` table the collector uses (same
+    structural checks; stored closed candles are never rewritten) and
+    stores market rules in `markets`. Backtests read only the database,
+    loading one strategy lookback of warm-up before `start`.
+-   **Timing:** a decision at a candle's close fills only at the very
+    next candle's open (latency = one interval). If that candle is
+    missing, the order expires; it never fills at a later price the
+    decision did not see. No candle at or after the decision is visible
+    to the strategy.
+-   **Fills and costs:** a synthetic quote around the open
+    (`spread_bps`, bid rounded down / ask up to the tick) feeds the
+    shared `FillModel` (`slippage_bps`, IOC limit from the sizer, fees in
+    the received asset) and the shared `settlement_deltas`, so paper and
+    backtest settle identically. Defaults in `[backtest]`: 1,000 USDT,
+    1 bps spread, 5 bps slippage, 0.1% fee.
+-   **Risk:** the full sizing and risk policy runs on every signal.
+    Daily-loss and drawdown breaches trip the kill switch, which halts
+    trading for the rest of the run (no operator to re-arm it); the
+    report states when and why.
+-   **Metrics:** total return, max drawdown and its duration,
+    annualized volatility, Sharpe (rf = 0), fills, round trips, win
+    rate, fees in quote, turnover, time in market (dust excluded), and
+    buy-and-hold benchmark gross and net of two fees; plus signal,
+    approval, rejection, and expiry counts.
+-   **Provenance:** every run is an append-only `backtest_runs` row
+    (`ExperimentRecord`): data range, SHA-256 fingerprint of every
+    candle read, strategy id/version/config hash/parameters, risk policy
+    version, code version (package version + git sha, `.dirty` when
+    modified), assumptions, and metrics. Reports (JSON and Markdown)
+    carry the caveat that simulated results are not evidence of future
+    returns.
+-   **Out of sample:** `backtest sweep` runs each parameter combination
+    on `[start, split)` and `[split, end)` and shows both side by side,
+    with the instruction to choose on in-sample columns only.
+
 ### 17.2 Paper broker
 
 Paper broker implements the same `ExecutionPort` and `AccountPort` as
@@ -1536,12 +1579,12 @@ state and observable alerts; shutdown closes resources cleanly.
 
 ### Phase 9 --- Backtest and research harness
 
--   [ ] Implement historical data loader and backtest broker.
--   [ ] Reuse the shared `simulation` fill model; extend it for spread,
+-   [x] Implement historical data loader and backtest broker.
+-   [x] Reuse the shared `simulation` fill model; extend it for spread,
     slippage, and latency assumptions rather than forking it.
--   [ ] Add performance and risk metrics.
--   [ ] Add experiment metadata/versioning and report export.
--   [ ] Add tests against hand-calculated toy datasets.
+-   [x] Add performance and risk metrics.
+-   [x] Add experiment metadata/versioning and report export.
+-   [x] Add tests against hand-calculated toy datasets.
 
 **Acceptance:** backtest is deterministic, avoids lookahead, and reports
 assumptions and costs alongside results.

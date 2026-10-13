@@ -212,6 +212,43 @@ With `channel = "telegram"`, `paper run --follow` refuses to start without
 those two secrets. The `log` channel only logs alerts; use it for trying
 things out, not for unattended running.
 
+## Backtesting
+
+Backtests read only from the database, so first backfill history from Binance
+(public endpoints, no credentials). This also stores the market rules (lot and
+tick sizes, minimums):
+
+    uv run arbitron market backfill configs/paper.toml --start 2026-09-01 --end 2026-10-13
+
+Then run a backtest of the configured strategy, optionally overriding its
+parameters:
+
+    uv run arbitron backtest run configs/paper.toml --start 2026-09-15 --end 2026-10-13 \
+        --param fast=10 --out reports/
+
+How it models trading:
+
+- A decision made at a candle's close fills at the next candle's open. If that
+  candle is missing, the order expires.
+- Fills use a quote around the open (`spread_bps`), slippage (`slippage_bps`)
+  and fees (`fee_pct`), set under `[backtest]`. Fills go through the same fill
+  model as paper trading.
+- The full sizing and risk policy applies. A loss-limit breach trips the kill
+  switch and halts trading for the rest of the run.
+
+Every run is recorded with its data fingerprint, parameters, risk policy, code
+version and assumptions. Use `backtest list` and `backtest show ID` to see
+past runs.
+
+To compare parameters without fooling yourself, sweep them over an in-sample
+period and check the out-of-sample period:
+
+    uv run arbitron backtest sweep configs/paper.toml --start 2026-09-15 \
+        --split 2026-10-01 --end 2026-10-13 --param fast=5,10,20 --param slow=30,60
+
+Pick parameters by the in-sample columns only. Backtest results are simulated
+and are not evidence of future returns.
+
 ## Development
 
 ```bash

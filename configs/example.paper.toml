@@ -79,6 +79,14 @@ starting_balance = "1000"
 slippage_bps = "5"
 fee_pct = "0.1"
 
+# Backtest cost assumptions. These are the defaults (same costs as [paper]).
+# Fills happen at the next candle's open, around a synthetic quote of spread_bps.
+[backtest]
+starting_balance = "1000"
+spread_bps = "1"
+slippage_bps = "5"
+fee_pct = "0.1"
+
 # Operator alerts. Use "telegram" for any unattended run; it needs
 # ARBITRON_TELEGRAM_BOT_TOKEN and ARBITRON_TELEGRAM_CHAT_ID in the environment.
 # "log" only logs alerts (fine for trying things out).

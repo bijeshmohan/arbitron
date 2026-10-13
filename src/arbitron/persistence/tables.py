@@ -4,7 +4,7 @@ Row classes are persistence-only; repositories map them to and from domain
 objects. Enumerations are stored as text guarded by CHECK constraints (easier
 to evolve than PostgreSQL enum types). Financial values use NUMERIC(38, 18).
 
-Tables for later phases (markets, balance snapshots, bot instances,
+Tables for later phases (balance snapshots, bot instances,
 strategy runs, heartbeats, risk events) are added by the
 migrations of the phase that first uses them.
 """
@@ -62,6 +62,31 @@ def _in(column: str, enum: type[StrEnum]) -> str:
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+
+class MarketRow(Base):
+    """Latest known trading rules per market (plan §7.2), refreshed by backfill.
+
+    Lets backtests run offline and reproducibly from stored data.
+    """
+
+    __tablename__ = "markets"
+    __table_args__ = (
+        CheckConstraint("amount_step > 0 AND price_step > 0", name="positive_steps"),
+        CheckConstraint("min_amount >= 0 AND min_cost >= 0", name="non_negative_minimums"),
+    )
+
+    exchange_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    base: Mapped[str] = mapped_column(Text)
+    quote: Mapped[str] = mapped_column(Text)
+    market_type: Mapped[str] = mapped_column(Text)
+    amount_step: Mapped[Decimal] = mapped_column(Money)
+    price_step: Mapped[Decimal] = mapped_column(Money)
+    min_amount: Mapped[Decimal] = mapped_column(Money)
+    min_cost: Mapped[Decimal] = mapped_column(Money)
+    active: Mapped[bool] = mapped_column(Boolean)
+    observed_at: Mapped[datetime] = mapped_column(Timestamp)
 
 
 class CandleRow(Base):
@@ -369,6 +394,32 @@ class HeartbeatRow(Base):
     detail: Mapped[str] = mapped_column(Text)
 
 
+class BacktestRunRow(Base):
+    """Append-only experiment records (plan §17.1)."""
+
+    __tablename__ = "backtest_runs"
+    __table_args__ = (Index(None, "created_at"), Index(None, "label"))
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(Timestamp)
+    label: Mapped[str] = mapped_column(Text)
+    exchange_id: Mapped[str] = mapped_column(Text)
+    symbols: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    timeframe: Mapped[str] = mapped_column(Text)
+    start: Mapped[datetime] = mapped_column(Timestamp)
+    end: Mapped[datetime] = mapped_column(Timestamp)
+    strategy_id: Mapped[str] = mapped_column(Text)
+    strategy_version: Mapped[str] = mapped_column(Text)
+    config_hash: Mapped[str] = mapped_column(Text)
+    risk_policy_version: Mapped[str] = mapped_column(Text)
+    code_version: Mapped[str] = mapped_column(Text)
+    data_fingerprint: Mapped[str] = mapped_column(Text)
+    candle_count: Mapped[int] = mapped_column(Integer)
+    assumptions: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+
 # --- Paper venue -------------------------------------------------------------
 # The simulated exchange's own state, deliberately separate from the bot's
 # records (orders, fills, positions) so reconciliation compares two sources,
@@ -462,6 +513,7 @@ APPEND_ONLY_TABLES = (
     SystemEventRow.__tablename__,
     EquitySnapshotRow.__tablename__,
     ReconciliationLookupRow.__tablename__,
+    BacktestRunRow.__tablename__,
     PaperTradeRow.__tablename__,
     PaperFundingRow.__tablename__,
 )

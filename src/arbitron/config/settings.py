@@ -245,6 +245,20 @@ class PaperSection(_Section):
     fee_pct: NonNegativeDecimal = Field(default=Decimal("0.1"), le=5)
 
 
+class BacktestSection(_Section):
+    """Backtest cost assumptions (operator decisions 2026-10-13).
+
+    Defaults match the paper venue so paper and backtest results are
+    comparable. Fills happen at the next candle's open.
+    """
+
+    starting_balance: PositiveDecimal = Decimal(1000)
+    # Full bid/ask spread around the reference price (synthetic quotes).
+    spread_bps: NonNegativeDecimal = Field(default=Decimal(1), le=500)
+    slippage_bps: NonNegativeDecimal = Field(default=Decimal(5), le=500)
+    fee_pct: NonNegativeDecimal = Field(default=Decimal("0.1"), le=5)
+
+
 class AlertChannel(StrEnum):
     TELEGRAM = "telegram"
     LOG = "log"  # log only; never acceptable for unattended running
@@ -292,6 +306,7 @@ class ArbitronConfig(_Section):
     execution: ExecutionSection
     market: MarketSection = MarketSection()
     paper: PaperSection = PaperSection()
+    backtest: BacktestSection = BacktestSection()
     alerts: AlertsSection = AlertsSection()
     monitoring: MonitoringSection = MonitoringSection()
     live: LiveSection = LiveSection()

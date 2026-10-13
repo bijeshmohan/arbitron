@@ -4,7 +4,11 @@ from arbitron.persistence.repositories.events import (
     SqlHeartbeatRepository,
     SqlSystemEventRepository,
 )
-from arbitron.persistence.repositories.market import SqlCandleRepository
+from arbitron.persistence.repositories.market import (
+    SqlCandleRepository,
+    SqlExperimentRepository,
+    SqlMarketRepository,
+)
 from arbitron.persistence.repositories.portfolio import (
     SqlEquitySnapshotRepository,
     SqlPositionRepository,
@@ -25,9 +29,11 @@ from arbitron.persistence.repositories.trading import (
 __all__ = [
     "SqlCandleRepository",
     "SqlEquitySnapshotRepository",
+    "SqlExperimentRepository",
     "SqlFillRepository",
     "SqlHeartbeatRepository",
     "SqlKillSwitchRepository",
+    "SqlMarketRepository",
     "SqlOrderRepository",
     "SqlPositionRepository",
     "SqlReconciliationLookupRepository",

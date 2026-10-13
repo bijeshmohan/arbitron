@@ -48,6 +48,7 @@ from arbitron.ports.errors import (
 )
 from arbitron.ports.market_data import MarketDataPort
 from arbitron.simulation.fill_model import FillModel, UnsupportedOrderError
+from arbitron.simulation.settlement import settlement_deltas
 
 FILLED, EXPIRED = "FILLED", "EXPIRED"
 
@@ -171,15 +172,13 @@ class PaperBroker:
             base = await self._balance_for_update(session, market.base)
             quote = await self._balance_for_update(session, market.quote)
             self._check_funds(intent, base, quote)
-            with localcontext(FINANCIAL_CONTEXT):
-                if fill.is_fill and fill.price is not None:
-                    notional = fill.filled * fill.price
-                    if intent.side is Side.BUY:
-                        quote.free -= notional
-                        base.free += fill.filled - fill.fee
-                    else:
-                        base.free -= fill.filled
-                        quote.free += notional - fill.fee
+            if fill.is_fill and fill.price is not None:
+                base_delta, quote_delta = settlement_deltas(
+                    side=intent.side, filled=fill.filled, price=fill.price, fee=fill.fee
+                )
+                with localcontext(FINANCIAL_CONTEXT):
+                    base.free += base_delta
+                    quote.free += quote_delta
             row = PaperOrderRow(
                 venue_order_id=venue_order_id,
                 account=self.account,
