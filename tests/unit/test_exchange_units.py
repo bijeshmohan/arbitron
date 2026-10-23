@@ -141,7 +141,7 @@ class TestErrorTranslation:
             (ccxt.BadSymbol(), venue.MarketUnavailable),
             (ccxt.MarketClosed(), venue.MarketUnavailable),
             (ccxt.NotSupported(), venue.UnsupportedCapability),
-            (ccxt.BadRequest(), venue.UnknownExchangeError),
+            (ccxt.BadRequest(), venue.InvalidOrder),
             (ccxt.NullResponse(), venue.UnknownExchangeError),
             (ccxt.ExchangeError(), venue.UnknownExchangeError),
             (TimeoutError(), venue.RequestTimeout),

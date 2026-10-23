@@ -29,6 +29,10 @@ _TRANSLATIONS: tuple[tuple[type[BaseException], type[venue.VenueError]], ...] = 
     (ccxt.RestrictedLocation, venue.AuthenticationFailure),
     (ccxt.AuthenticationError, venue.AuthenticationFailure),
     (ccxt.BadSymbol, venue.MarketUnavailable),
+    # The venue refused a request it judged malformed (HTTP 400), e.g. Binance
+    # -1013 "Filter failure: NOTIONAL" on an order: definitively not placed.
+    # Confirmed against the Binance spot testnet (docs/sandbox-qualification.md).
+    (ccxt.BadRequest, venue.InvalidOrder),
     (ccxt.MarketClosed, venue.MarketUnavailable),
     (ccxt.NotSupported, venue.UnsupportedCapability),
     # Everything else, including malformed responses, is unknown and not retried.

@@ -1636,13 +1636,15 @@ unauthenticated to change trading state.
 
 ### Phase 11 --- Sandbox qualification
 
--   [ ] Select one exchange and verify sandbox availability and
+-   [x] Select one exchange and verify sandbox availability and
     limitations.
--   [ ] Configure separate sandbox credentials.
--   [ ] Run manual end-to-end order lifecycle tests.
--   [ ] Verify precision, minimums, client IDs, cancellation, fills, and
+-   [x] Configure separate sandbox credentials.
+-   [x] Run manual end-to-end order lifecycle tests.
+-   [x] Verify precision, minimums, client IDs, cancellation, fills, and
     reconciliation.
--   [ ] Document any unsupported endpoint/behavior.
+-   [x] Document any unsupported endpoint/behavior.
+
+Results, fixes, and limitations: `docs/sandbox-qualification.md`.
 
 **Acceptance:** sandbox tests pass for the chosen exchange and all
 limitations are recorded. No live keys are used.
@@ -1696,8 +1698,10 @@ Do not guess these; use safe defaults and document assumptions:
 1.  **Exchange:** **decided: Binance spot** (operator is in India).
     Public market data via CCXT is verified (Phase 3). Still to verify
     before live use: account eligibility and KYC for the operator's
-    jurisdiction, API key permissions, and the sandbox option for Phase 11
-    (Binance spot testnet, or CCXT's Binance demo-trading mode).
+    jurisdiction and API key permissions. Sandbox: **decided and qualified**
+    on the Binance spot testnet (Phase 11, `docs/sandbox-qualification.md`).
+    Open for Phase 12: a dedicated account that starts flat in the
+    configured base assets, or a recorded opening balance in reconciliation.
 2.  **Market:** spot only for MVP; confirm quote currency and symbol
     allowlist.
 3.  **Strategy:** select only for software integration initially; do not

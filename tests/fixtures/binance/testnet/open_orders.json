@@ -1,0 +1,24 @@
+[
+  {
+    "symbol": "BTCUSDT",
+    "orderId": 6243130,
+    "orderListId": -1,
+    "clientOrderId": "arb54359948d25d4526970f6639a0b85",
+    "price": "73573.34000000",
+    "origQty": "0.00013000",
+    "executedQty": "0.00000000",
+    "cummulativeQuoteQty": "0.00000000",
+    "status": "NEW",
+    "timeInForce": "GTC",
+    "type": "LIMIT",
+    "side": "BUY",
+    "stopPrice": "0.00000000",
+    "icebergQty": "0.00000000",
+    "time": 1792774881527,
+    "updateTime": 1792774881527,
+    "isWorking": true,
+    "workingTime": 1792774881527,
+    "origQuoteOrderQty": "0.00000000",
+    "selfTradePreventionMode": "EXPIRE_MAKER"
+  }
+]

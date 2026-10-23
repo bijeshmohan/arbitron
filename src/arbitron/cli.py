@@ -702,6 +702,78 @@ async def _alerts_test(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+async def _sandbox(args: argparse.Namespace) -> int:
+    """Read-only checks, or (``qualify --yes``) the order lifecycle on the sandbox."""
+    from datetime import timedelta  # noqa: PLC0415
+
+    from arbitron.application.sandbox_qualification import SandboxQualification  # noqa: PLC0415
+    from arbitron.clocks import SystemClock  # noqa: PLC0415
+    from arbitron.config.settings import Mode  # noqa: PLC0415
+    from arbitron.exchange.ccxt_adapter import create_market_data  # noqa: PLC0415
+    from arbitron.exchange.ccxt_trading import create_trading  # noqa: PLC0415
+    from arbitron.ports.errors import VenueError  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    if config.app.mode is not Mode.SANDBOX:
+        print(f"error: needs app.mode = 'sandbox', got {config.app.mode}", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    qualify = args.sandbox_command == "qualify"
+    if qualify and not args.yes:
+        print(
+            "error: `sandbox qualify` places and cancels small orders on the sandbox; "
+            "pass --yes to confirm",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID_CONFIG
+    symbol = args.symbol or config.exchange.symbols[0]
+    if symbol not in config.exchange.symbols:
+        print(f"error: {symbol} is not in exchange.symbols", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    clock = SystemClock()
+    try:
+        trading = create_trading(config, clock)
+    except VenueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    market_data = create_market_data(config, clock)
+    try:
+        qualification = SandboxQualification(
+            market_data=market_data,
+            trading=trading,
+            clock=clock,
+            symbol=symbol,
+            max_clock_skew=timedelta(milliseconds=config.market.max_clock_skew_ms),
+        )
+        report = await (qualification.order_lifecycle() if qualify else qualification.check())
+    finally:
+        await trading.close()
+        await market_data.close()
+    print(f"sandbox {config.exchange.id} {symbol} (sandbox endpoints; no real funds)")
+    for result in report.results:
+        print(f"  [{'ok' if result.ok else 'FAIL'}] {result.name}: {result.detail}")
+    return EXIT_OK if report.ok else EXIT_VENUE_ERROR
+
+
+def _add_sandbox(subcommands: "_Subcommands") -> None:
+    sandbox = subcommands.add_parser(
+        "sandbox", help="exchange sandbox qualification (sandbox credentials only)"
+    )
+    commands = sandbox.add_subparsers(
+        dest="sandbox_command", required=True, metavar="SANDBOX_COMMAND"
+    )
+    check = commands.add_parser(
+        "check", help="read-only: clock, market rules, balances, open orders"
+    )
+    qualify = commands.add_parser(
+        "qualify", help="place, inspect, and cancel small orders on the sandbox"
+    )
+    qualify.add_argument("--yes", action="store_true", help="confirm placing sandbox orders")
+    for parser in (check, qualify):
+        parser.add_argument("config", type=Path, help="path to a sandbox-mode TOML config")
+        parser.add_argument("--symbol", help="symbol to use (default: the first configured)")
+        parser.set_defaults(handler=_sandbox)
+
+
 def _parameter_value(text: str) -> "ParameterValue":
     """``10`` -> int, ``true``/``false`` -> bool, anything else -> str (never float)."""
     lowered = text.strip().lower()
@@ -989,6 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
         _add_orders,
         _add_alerts,
         _add_backtest,
+        _add_sandbox,
     ):
         add(subcommands)
     return parser

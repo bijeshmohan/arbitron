@@ -69,6 +69,7 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "integration: needs PostgreSQL (Docker via testcontainers, or ARBITRON_TEST_DATABASE_URL)",
     "live_exchange: calls a real venue; opt-in via ARBITRON_LIVE_EXCHANGE_TESTS=1",
+    "sandbox_exchange: places orders on the exchange sandbox; opt-in via ARBITRON_SANDBOX_TESTS=1",
 ]
 filterwarnings = ["error"]
 

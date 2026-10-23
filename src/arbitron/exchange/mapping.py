@@ -12,9 +12,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
 
-from arbitron.domain.enums import MarketType
+from arbitron.domain.enums import MarketType, OrderStatus, OrderType, Side
 from arbitron.domain.errors import DomainError
+from arbitron.domain.fills import ExchangeTrade, Fee
 from arbitron.domain.market import Candle, Market, Ticker, Timeframe
+from arbitron.domain.orders import ExchangeOrder
+from arbitron.domain.portfolio import Balance
 from arbitron.ports.errors import InvalidVenueData
 
 # CCXT precision modes (ccxt.base.decimal_to_precision).
@@ -159,3 +162,133 @@ def ticker_from_ccxt(raw: Mapping[str, object], *, exchange_id: str, symbol: str
     except DomainError as exc:
         msg = f"{symbol}: invalid ticker: {exc}"
         raise InvalidVenueData(msg) from exc
+
+
+# Binance spot order statuses (the venue's own strings, kept as ``raw_status``).
+# Closed statuses split on whether anything filled, matching the internal
+# distinction between e.g. EXPIRED and PARTIALLY_FILLED_CLOSED.
+_OPEN_STATUSES = frozenset({"NEW", "PARTIALLY_FILLED", "PENDING_NEW", "PENDING_CANCEL"})
+_CLOSED_EMPTY: Mapping[str, OrderStatus] = {
+    "CANCELED": OrderStatus.CANCELED,
+    "EXPIRED": OrderStatus.EXPIRED,
+    # Expired by self-trade prevention: the venue's own cancel, not ours.
+    "EXPIRED_IN_MATCH": OrderStatus.EXPIRED,
+}
+
+
+def order_status_from_venue(raw_status: str, *, filled: Decimal, amount: Decimal) -> OrderStatus:
+    if raw_status == "FILLED":
+        return OrderStatus.FILLED
+    if raw_status == "REJECTED":
+        return OrderStatus.EXCHANGE_REJECTED
+    if raw_status in _OPEN_STATUSES:
+        # PENDING_CANCEL is documented as unused; treat it as still working.
+        return OrderStatus.PARTIALLY_FILLED if 0 < filled < amount else OrderStatus.OPEN
+    if raw_status in _CLOSED_EMPTY:
+        return OrderStatus.PARTIALLY_FILLED_CLOSED if filled > 0 else _CLOSED_EMPTY[raw_status]
+    msg = f"unknown venue order status {raw_status!r}"
+    raise InvalidVenueData(msg)
+
+
+def _fee(raw: object, field: str) -> Fee | None:
+    cost = _child(raw, "cost")
+    currency = _child(raw, "currency")
+    if cost is None or currency is None:
+        return None
+    return Fee(decimal_from_ccxt(cost, f"{field}.cost"), str(currency))
+
+
+def _order_fee(raw: Mapping[str, object]) -> Fee | None:
+    """The order's fee if the venue reports it in a single currency, else ``None``.
+
+    Fees are informational on orders; fills (trades) carry the authoritative fees.
+    """
+    fees = raw.get("fees")
+    if isinstance(fees, list):
+        parsed = [
+            f
+            for i, item in enumerate(cast("list[object]", fees))
+            if (f := _fee(item, f"fees[{i}]"))
+        ]
+        currencies = {f.currency for f in parsed}
+        if len(currencies) == 1:
+            return Fee(sum((f.amount for f in parsed), Decimal(0)), currencies.pop())
+        if currencies:
+            return None
+    return _fee(raw.get("fee"), "fee")
+
+
+def exchange_order_from_ccxt(raw: Mapping[str, object], *, exchange_id: str) -> ExchangeOrder:
+    order_id = raw.get("id")
+    try:
+        raw_status = _get(raw, "info", "status") or raw.get("status")
+        if not isinstance(raw_status, str):
+            msg = f"order {order_id}: missing status"
+            raise InvalidVenueData(msg)
+        amount = decimal_from_ccxt(raw.get("amount"), "amount")
+        filled = decimal_from_ccxt(raw.get("filled"), "filled")
+        timestamp = raw.get("lastUpdateTimestamp") or raw.get("timestamp")
+        # Binance cancel responses carry our ID as origClientOrderId and a new
+        # random clientOrderId (observed on the spot testnet); prefer ours.
+        client_order_id = _get(raw, "info", "origClientOrderId") or raw.get("clientOrderId")
+        return ExchangeOrder(
+            exchange_id=exchange_id,
+            exchange_order_id=str(order_id),
+            client_order_id=str(client_order_id) if client_order_id else None,
+            symbol=str(raw.get("symbol")),
+            side=Side(str(raw.get("side"))),
+            order_type=OrderType(str(raw.get("type"))),
+            status=order_status_from_venue(raw_status, filled=filled, amount=amount),
+            raw_status=raw_status,
+            amount=amount,
+            filled=filled,
+            remaining=amount - filled,
+            average_price=optional_decimal(raw.get("average"), "average") if filled else None,
+            fee=_order_fee(raw),
+            timestamp=datetime_from_ms(timestamp, "timestamp"),
+        )
+    except (DomainError, ValueError) as exc:
+        msg = f"order {order_id}: invalid order: {exc}"
+        raise InvalidVenueData(msg) from exc
+
+
+def exchange_trade_from_ccxt(raw: Mapping[str, object], *, exchange_id: str) -> ExchangeTrade:
+    trade_id = raw.get("id")
+    try:
+        return ExchangeTrade(
+            exchange_id=exchange_id,
+            trade_id=str(trade_id) if trade_id is not None else None,
+            exchange_order_id=str(raw.get("order")),
+            symbol=str(raw.get("symbol")),
+            side=Side(str(raw.get("side"))),
+            amount=decimal_from_ccxt(raw.get("amount"), "amount"),
+            price=decimal_from_ccxt(raw.get("price"), "price"),
+            fee=_fee(raw.get("fee"), "fee"),
+            timestamp=datetime_from_ms(raw.get("timestamp"), "timestamp"),
+        )
+    except (DomainError, ValueError) as exc:
+        msg = f"trade {trade_id}: invalid trade: {exc}"
+        raise InvalidVenueData(msg) from exc
+
+
+def balances_from_ccxt(raw: Mapping[str, object], *, observed_at: datetime) -> dict[str, Balance]:
+    """Non-zero balances keyed by asset. Total is free + used, computed exactly."""
+    free = raw.get("free")
+    used = raw.get("used")
+    if not isinstance(free, dict) or not isinstance(used, dict):
+        msg = "balance: missing free/used maps"
+        raise InvalidVenueData(msg)
+    free_map = cast("dict[str, object]", free)
+    used_map = cast("dict[str, object]", used)
+    balances: dict[str, Balance] = {}
+    for asset in sorted(set(free_map) | set(used_map)):
+        f = optional_decimal(free_map.get(asset), f"{asset}.free") or Decimal(0)
+        u = optional_decimal(used_map.get(asset), f"{asset}.used") or Decimal(0)
+        if not f and not u:
+            continue
+        try:
+            balances[asset] = Balance(asset, f, u, f + u, observed_at)
+        except DomainError as exc:
+            msg = f"balance {asset}: {exc}"
+            raise InvalidVenueData(msg) from exc
+    return balances

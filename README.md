@@ -238,6 +238,22 @@ files and are never environment variables.
 [docs/deployment.md](docs/deployment.md) covers first deployment, arming,
 the API, upgrades, backup and restore, secret rotation and incidents.
 
+## Exchange sandbox
+
+The authenticated exchange adapter only works against the Binance spot
+testnet in this build. It refuses any other configuration. Create testnet
+keys at testnet.binance.vision (GitHub login) and put them in
+`ARBITRON_EXCHANGE_API_KEY` / `ARBITRON_EXCHANGE_API_SECRET`. Never use live
+keys.
+
+    cp configs/example.sandbox.toml configs/sandbox.toml
+    uv run arbitron sandbox check configs/sandbox.toml          # read-only
+    uv run arbitron sandbox qualify configs/sandbox.toml --yes  # tiny test orders
+
+[docs/sandbox-qualification.md](docs/sandbox-qualification.md) records what
+was verified, what the sandbox cannot show, and the open questions for the
+live-readiness review.
+
 ## Backtesting
 
 Backtests read only from the database, so first backfill history from Binance
@@ -284,6 +300,7 @@ uv run pyright                # type-check (strict)
 uv run pytest --cov           # all tests with coverage (integration needs Docker)
 uv run pytest -m "not integration"   # unit + contract tests only
 ARBITRON_LIVE_EXCHANGE_TESTS=1 uv run pytest tests/live   # opt-in: real Binance API
+ARBITRON_SANDBOX_TESTS=1 uv run pytest tests/sandbox     # opt-in: places testnet orders
 ```
 
 Integration tests start a throwaway PostgreSQL container through

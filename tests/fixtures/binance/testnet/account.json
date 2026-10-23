@@ -1,0 +1,40 @@
+{
+  "makerCommission": 0,
+  "takerCommission": 0,
+  "buyerCommission": 0,
+  "sellerCommission": 0,
+  "commissionRates": {
+    "maker": "0.00000000",
+    "taker": "0.00000000",
+    "buyer": "0.00000000",
+    "seller": "0.00000000"
+  },
+  "canTrade": true,
+  "canWithdraw": true,
+  "canDeposit": true,
+  "brokered": false,
+  "requireSelfTradePrevention": false,
+  "preventSor": false,
+  "updateTime": 1792774882263,
+  "accountType": "SPOT",
+  "balances": [
+    {
+      "asset": "BTC",
+      "free": "1.00000000",
+      "locked": "0.00000000"
+    },
+    {
+      "asset": "USDT",
+      "free": "9999.99998960",
+      "locked": "0.00000000"
+    },
+    {
+      "asset": "ETH",
+      "free": "1.00000000",
+      "locked": "0.00000000"
+    }
+  ],
+  "permissions": [
+    "SPOT"
+  ]
+}

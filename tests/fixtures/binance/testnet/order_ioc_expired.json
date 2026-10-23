@@ -1,0 +1,20 @@
+{
+  "symbol": "BTCUSDT",
+  "orderId": 6243135,
+  "orderListId": -1,
+  "clientOrderId": "arb18e594fbd26b415ab16fa7317e01e",
+  "transactTime": 1792774882263,
+  "price": "73573.34000000",
+  "origQty": "0.00013000",
+  "executedQty": "0.00000000",
+  "origQuoteOrderQty": "0.00000000",
+  "cummulativeQuoteQty": "0.00000000",
+  "status": "EXPIRED",
+  "expiryReason": "UNFILLED_IOC_QUANTITY_EXPIRED",
+  "timeInForce": "IOC",
+  "type": "LIMIT",
+  "side": "BUY",
+  "workingTime": 1792774882263,
+  "fills": [],
+  "selfTradePreventionMode": "EXPIRE_MAKER"
+}

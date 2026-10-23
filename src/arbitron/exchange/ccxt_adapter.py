@@ -3,12 +3,11 @@
 The rest of the application never imports CCXT (plan §8). Every call here is
 bounded (CCXT timeout plus an outer ``asyncio.timeout``), concurrency-limited,
 rate-limited by CCXT, translated into the venue error taxonomy, and retried
-only when the error is retryable.
+only when the error is retryable (``exchange.calls``).
 """
 
 import asyncio
 import random
-import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -17,8 +16,8 @@ import ccxt.async_support as ccxt_async
 
 from arbitron.config.settings import ArbitronConfig
 from arbitron.domain.market import Candle, Market, Ticker, Timeframe
+from arbitron.exchange.calls import VenueCaller
 from arbitron.exchange.capabilities import SUPPORTED_VENUES, VenueCapabilities
-from arbitron.exchange.errors import venue_errors
 from arbitron.exchange.mapping import (
     candles_from_ohlcv,
     datetime_from_ms,
@@ -26,7 +25,7 @@ from arbitron.exchange.mapping import (
     market_from_ccxt,
     ticker_from_ccxt,
 )
-from arbitron.exchange.retry import RetryPolicy, Sleep, retry_read
+from arbitron.exchange.retry import RetryPolicy, Sleep
 from arbitron.ports.clock import Clock
 from arbitron.ports.errors import InvalidVenueData, MarketUnavailable, UnsupportedCapability
 
@@ -62,35 +61,27 @@ class CcxtMarketData:
         self._symbols = tuple(symbols)
         self._clock = clock
         self._close_grace = close_grace
-        # Outer guard slightly above CCXT's own timeout, so CCXT normally
-        # reports first and this only catches a hung call.
-        self._call_timeout = request_timeout.total_seconds() * 1.5
-        self._retry = retry
-        self._semaphore = asyncio.Semaphore(concurrency)
-        self._sleep = sleep
-        self._rng = rng
+        self._calls = VenueCaller(
+            request_timeout=request_timeout,
+            retry=retry,
+            concurrency=concurrency,
+            sleep=sleep,
+            rng=rng,
+        )
         self.capabilities = VenueCapabilities.from_ccxt_has(exchange.has)
         self.markets_loaded_at: datetime | None = None
-        # (operation, outcome, seconds) per attempt, for metrics; set by the runtime.
-        self.observer: Callable[[str, str, float], None] | None = None
+
+    @property
+    def observer(self) -> Callable[[str, str, float], None] | None:
+        """(operation, outcome, seconds) per attempt, for metrics; set by the runtime."""
+        return self._calls.observer
+
+    @observer.setter
+    def observer(self, value: Callable[[str, str, float], None] | None) -> None:
+        self._calls.observer = value
 
     async def _call[T](self, operation: str, make_call: Callable[[], Awaitable[T]]) -> T:
-        async def attempt() -> T:
-            async with self._semaphore:
-                started = time.monotonic()
-                outcome = "ok"
-                try:
-                    with venue_errors():
-                        async with asyncio.timeout(self._call_timeout):
-                            return await make_call()
-                except Exception as exc:
-                    outcome = type(exc).__name__
-                    raise
-                finally:
-                    if self.observer is not None:
-                        self.observer(operation, outcome, time.monotonic() - started)
-
-        return await retry_read(attempt, self._retry, sleep=self._sleep, rng=self._rng)
+        return await self._calls.read(operation, make_call)
 
     def _require_symbol(self, symbol: str) -> None:
         if symbol not in self._symbols:
@@ -165,19 +156,8 @@ def create_market_data(
     ``exchange`` lets tests inject a CCXT instance with a stubbed transport.
     """
     exchange_id = config.exchange.id
-    if exchange_id not in SUPPORTED_VENUES:
-        msg = f"exchange {exchange_id!r} is not supported (supported: {sorted(SUPPORTED_VENUES)})"
-        raise UnsupportedCapability(msg)
     if exchange is None:
-        exchange = _VENUE_CLASSES[exchange_id](
-            {
-                "enableRateLimit": True,
-                "timeout": config.exchange.request_timeout_ms,
-                "options": dict(_VENUE_OPTIONS[exchange_id]),
-            }
-        )
-        if config.exchange.sandbox:
-            exchange.set_sandbox_mode(True)
+        exchange = build_exchange(config)
     adapter = CcxtMarketData(
         exchange,
         exchange_id=exchange_id,
@@ -190,6 +170,31 @@ def create_market_data(
     )
     adapter.capabilities.require_market_data()
     return adapter
+
+
+def build_exchange(
+    config: ArbitronConfig, *, credentials: Mapping[str, str] | None = None
+) -> ccxt_async.Exchange:
+    """A CCXT instance for the configured venue, in sandbox mode if configured.
+
+    ``credentials`` (CCXT ``apiKey``/``secret``) are only passed by the trading
+    adapter; market data never authenticates.
+    """
+    exchange_id = config.exchange.id
+    if exchange_id not in SUPPORTED_VENUES:
+        msg = f"exchange {exchange_id!r} is not supported (supported: {sorted(SUPPORTED_VENUES)})"
+        raise UnsupportedCapability(msg)
+    exchange = _VENUE_CLASSES[exchange_id](
+        {
+            "enableRateLimit": True,
+            "timeout": config.exchange.request_timeout_ms,
+            "options": dict(_VENUE_OPTIONS[exchange_id]),
+            **(credentials or {}),
+        }
+    )
+    if config.exchange.sandbox:
+        exchange.set_sandbox_mode(True)
+    return exchange
 
 
 def venue_options(exchange_id: str) -> Mapping[str, Any]:

@@ -1,0 +1,64 @@
+# Example exchange-sandbox configuration (Binance spot testnet).
+# Copy to configs/sandbox.toml (gitignored). Needs testnet keys in
+# ARBITRON_EXCHANGE_API_KEY / ARBITRON_EXCHANGE_API_SECRET; never use live keys.
+# Values illustrate the configuration shape only; they are NOT recommended
+# financial limits. Testnet funds are virtual.
+
+[app]
+mode = "sandbox"
+environment = "development"
+timezone = "UTC"
+
+[exchange]
+id = "binance"
+sandbox = true
+spot_only = true
+symbols = ["BTC/USDT"]
+request_timeout_ms = 10000
+
+[strategy]
+id = "sma_cross"
+version = "1"
+timeframe = "5m"
+enabled = true
+
+# sma_cross is a software integration fixture, not a trading recommendation.
+[strategy.parameters]
+fast = 10
+slow = 30
+
+[risk]
+trading_enabled = true
+max_order_notional = "50"
+max_asset_exposure = "100"
+max_total_exposure = "100"
+max_open_orders = 2
+max_orders_per_hour = 6
+max_daily_loss = "10"
+max_drawdown_pct = "5"
+max_spread_pct = "0.2"
+min_quote_reserve = "10"
+max_market_data_age_seconds = 600
+max_ticker_age_seconds = 10
+
+[sizing]
+entry_notional = "25"
+max_slippage_pct = "0.1"
+assumed_fee_pct = "0.1"
+
+[execution]
+allow_market_orders = false
+submission_timeout_seconds = 15
+reconciliation_interval_seconds = 60
+unknown_order_settle_seconds = 30
+unknown_order_max_age_seconds = 900
+
+[alerts]
+channel = "log"
+
+[monitoring]
+log_format = "text"
+
+[live]
+enabled = false
+acknowledgement = false

@@ -221,3 +221,27 @@ def test_alerts_test_reports_telegram_failure_without_token(
     captured = capsys.readouterr()
     assert "HTTP 401" in captured.err
     assert token not in captured.out + captured.err
+
+
+EXAMPLE_SANDBOX = Path(__file__).parents[2] / "configs" / "example.sandbox.toml"
+
+
+def test_sandbox_needs_a_sandbox_config(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["sandbox", "check", str(EXAMPLE_PAPER)]) == EXIT_INVALID_CONFIG
+    assert "needs app.mode = 'sandbox'" in capsys.readouterr().err
+
+
+def test_sandbox_qualify_needs_confirmation(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["sandbox", "qualify", str(EXAMPLE_SANDBOX)]) == EXIT_INVALID_CONFIG
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_sandbox_without_credentials_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["sandbox", "check", str(EXAMPLE_SANDBOX)]) == EXIT_INVALID_CONFIG
+    assert "ARBITRON_EXCHANGE_API_KEY" in capsys.readouterr().err
+
+
+def test_sandbox_rejects_unconfigured_symbol(capsys: pytest.CaptureFixture[str]) -> None:
+    argv = ["sandbox", "check", str(EXAMPLE_SANDBOX), "--symbol", "ETH/USDT"]
+    assert main(argv) == EXIT_INVALID_CONFIG
+    assert "not in exchange.symbols" in capsys.readouterr().err
