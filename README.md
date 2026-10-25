@@ -254,6 +254,20 @@ keys.
 was verified, what the sandbox cannot show, and the open questions for the
 live-readiness review.
 
+## Soak test and live-readiness review
+
+Live trading stays disabled. Phase 12 is a review gate: a 14-day paper soak,
+judged against criteria fixed in advance, plus drills and a signed checklist.
+
+    docker compose -f deploy/compose.yaml exec app \
+        arbitron soak report /config/arbitron.toml --start <when the switch was armed>
+
+- [docs/soak-test.md](docs/soak-test.md): criteria, drills and the soak log
+- [docs/live-readiness-review.md](docs/live-readiness-review.md): checklist,
+  residual risks and sign-off
+- [docs/runbooks/](docs/runbooks/README.md): startup, shutdown, recovery, kill
+  switch, exchange outage, database restore, credential rotation, incidents
+
 ## Backtesting
 
 Backtests read only from the database, so first backfill history from Binance

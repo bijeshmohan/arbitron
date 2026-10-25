@@ -187,6 +187,8 @@ the restored records with the paper venue's state.
 
 ## Incidents
 
+The full procedures are in [runbooks/](runbooks/README.md). In short:
+
 1. **Stop new orders first:**
    `curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{"operator":"<you>","reason":"<why>"}' http://127.0.0.1:9108/kill-switch/trip`,
    or `docker compose ... exec app arbitron killswitch trip ...` on the host.

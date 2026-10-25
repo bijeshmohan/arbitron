@@ -774,6 +774,53 @@ def _add_sandbox(subcommands: "_Subcommands") -> None:
         parser.set_defaults(handler=_sandbox)
 
 
+async def _soak_report(args: argparse.Namespace) -> int:
+    """Score a paper soak window against docs/soak-test.md (read-only)."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from arbitron.application.soak import SoakEvaluator  # noqa: PLC0415
+    from arbitron.domain.market import Timeframe  # noqa: PLC0415
+    from arbitron.persistence.db import create_engine, create_session_factory  # noqa: PLC0415
+
+    config = _require_config(args.config)
+    end = args.end or datetime.now(UTC)
+    if args.start >= end:
+        print("error: --start must be before --end", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    async with _runtime(config, venue=False):
+        url = _database_url()
+        assert url is not None  # noqa: S101 - _runtime checked it
+        engine = create_engine(url, pool_size=1)
+        try:
+            report = await SoakEvaluator(
+                create_session_factory(engine),
+                exchange_id=config.exchange.id,
+                symbols=config.exchange.symbols,
+                timeframe=Timeframe(config.strategy.timeframe),
+                quote_currency=config.exchange.quote_currency,
+            ).evaluate(args.start, end, check_heartbeats=args.end is None)
+        finally:
+            await engine.dispose()
+    print(f"soak {args.start.isoformat()} -> {end.isoformat()} ({end - args.start})")
+    for criterion in report.criteria:
+        print(f"  [{'pass' if criterion.passed else 'FAIL'}] {criterion.name}: {criterion.detail}")
+    for kind, count in sorted(report.critical_events.items()):
+        print(f"  critical event {kind}: {count}")
+    print("  operator checks (not in the database): backups, alert delivery, drills")
+    print(f"result: {'PASS' if report.passed else 'FAIL'} (see docs/soak-test.md)")
+    return EXIT_OK if report.passed else EXIT_INVALID_STATE
+
+
+def _add_soak(subcommands: "_Subcommands") -> None:
+    soak = subcommands.add_parser("soak", help="paper soak test evaluation")
+    commands = soak.add_subparsers(dest="soak_command", required=True, metavar="SOAK_COMMAND")
+    report = commands.add_parser("report", help="score a soak window against its criteria")
+    report.add_argument("config", type=Path, help="path to the soak's TOML config")
+    report.add_argument("--start", type=_utc_timestamp, required=True, help="soak start (UTC)")
+    report.add_argument("--end", type=_utc_timestamp, help="soak end (default: now)")
+    report.set_defaults(handler=_soak_report)
+
+
 def _parameter_value(text: str) -> "ParameterValue":
     """``10`` -> int, ``true``/``false`` -> bool, anything else -> str (never float)."""
     lowered = text.strip().lower()
@@ -1062,6 +1109,7 @@ def build_parser() -> argparse.ArgumentParser:
         _add_alerts,
         _add_backtest,
         _add_sandbox,
+        _add_soak,
     ):
         add(subcommands)
     return parser

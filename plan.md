@@ -1668,6 +1668,11 @@ This phase is a review gate, not an automatic deployment.
 coding agent must not enable live trading or choose financial limits
 autonomously.
 
+Checklist, residual risks and sign-off: `docs/live-readiness-review.md`.
+Soak criteria and log: `docs/soak-test.md`. Runbooks: `docs/runbooks/`.
+Operator decisions 2026-10-24: 14-day soak on the deployment host; live
+would use a dedicated Binance sub-account that starts flat.
+
 ------------------------------------------------------------------------
 
 ## 23. Operational runbooks
