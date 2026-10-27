@@ -63,13 +63,14 @@ Known and accepted only if the signer says so:
    aren't seen. This is mitigated by the dedicated account (item 4).
 7. **Records lost in a database restore.** Activity after the dump exists
    only on the venue and must be reconciled by hand before re-arming.
-8. **Clock.** Only the offset to the venue's time is checked
+8. **Disk space isn't monitored.** The host is shared, and if the disk fills, PostgreSQL stops writing and trading stops (fail closed). Seen during the soak when another project filled the disk to 92%. Use a dedicated host or volume for live, or add a disk-space alert.
+9. **Clock.** Only the offset to the venue's time is checked
    (`max_clock_skew_ms`). Host NTP isn't monitored.
-9. **Regulation and tax.** Crypto trading from India has reporting and tax
+10. **Regulation and tax.** Crypto trading from India has reporting and tax
    obligations (for example TDS on virtual digital asset transfers). The
    operator should confirm these with a professional. They are out of scope
    for this software.
-10. **Strategy risk.** No backtest, paper result or sandbox run predicts
+11. **Strategy risk.** No backtest, paper result or sandbox run predicts
     returns. Losses are limited only by the risk limits the operator sets.
 
 ## Sign-off

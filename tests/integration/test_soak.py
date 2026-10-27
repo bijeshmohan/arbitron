@@ -214,3 +214,26 @@ async def test_window_shorter_than_an_interval_fails_clearly(
         "trading cycles": "window shorter than one 0:05:00 interval",
         "closed candles": "window too short to contain a closed candle",
     }
+
+
+async def test_cycle_in_the_unfinished_interval_is_not_counted(
+    engine: AsyncEngine, uow: UowFactory
+) -> None:
+    await healthy_soak(uow)
+    async with uow() as tx:  # a cycle after the last complete interval
+        await tx.equity_snapshots.add(
+            EquitySnapshot(END + timedelta(seconds=6), "USDT", Decimal(1000))
+        )
+        await tx.commit()
+    evaluator = SoakEvaluator(
+        create_session_factory(engine),
+        exchange_id="binance",
+        symbols=("BTC/USDT",),
+        timeframe=FIVE_MIN,
+        quote_currency="USDT",
+    )
+
+    report = await evaluator.evaluate(START, END + timedelta(minutes=2), check_heartbeats=False)
+
+    cycles = next(c for c in report.criteria if c.name == "trading cycles")
+    assert cycles.detail.startswith("24/24 intervals with a cycle (100.00%")

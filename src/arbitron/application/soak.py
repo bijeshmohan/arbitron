@@ -129,7 +129,8 @@ class SoakEvaluator:
         if not expected:
             report.add("trading cycles", False, f"window shorter than one {step} interval")
             return
-        covered = {int((t - report.start) / step) for t in times}
+        # Only complete intervals count; a cycle in the unfinished last one is ignored.
+        covered = {i for t in times if (i := int((t - report.start) / step)) < expected}
         coverage = Decimal(len(covered)) / expected if expected else Decimal(0)
         edges = [report.start, *times, report.end]
         longest = max((b - a for a, b in pairwise(edges)), default=step)

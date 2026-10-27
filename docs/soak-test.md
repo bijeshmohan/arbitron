@@ -82,4 +82,6 @@ Fill this in during the soak (UTC).
 | 2026-10-24 08:04 | drill day 1: `arbitron alerts test` | sent via Telegram; received by the operator (confirmed) |
 | 2026-10-25 | pre-window check (unarmed, 29 h) | healthy, cycles every 5 min, no errors, daily backups on 10-24 and 10-25; host confirmed as this server |
 | 2026-10-25 12:45:29 | kill switch armed by Bijesh Mohan: **window start**; window ends 2026-11-08 12:45:29 | `/ready` 200, all checks ok |
+| 2026-10-27 01:40 | status check (1 d 13 h): soak report PASS | root disk 92% (3.7 GB free), down from 7.8 GB, caused by another project on the host (a 3.45 GB Playwright image); arbitron growth negligible. Watch: a full disk would stop PostgreSQL. |
+| 2026-10-27 01:56:02 | drill day 2: graceful restart (`docker compose restart app`) | **pass**: clean stop (6 tasks stopped, 0 stuck); healthy again at 01:56:10; startup reconciliation clean, 0 recovered orders; cycles resumed at the 02:00 close; `/ready` 200; no unresolved orders. Disk at 81% after the operator's cleanup. Found and fixed a soak-report bug (a cycle in the unfinished interval was counted, showing 447/446); the fix goes into the image at the day-4 rebuild. |
 | | | |
