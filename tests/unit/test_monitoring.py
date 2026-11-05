@@ -166,6 +166,13 @@ class TestAlertMapping:
             "Task crashed and is restarting"
         )
 
+    def test_restart_after_downtime_explains_itself(self) -> None:
+        alert = alert_for(self.event("runtime.restarted_after_gap", gap="0:50:00"))
+
+        assert alert.title == "Restarted after downtime"
+        assert "gap=0:50:00" in alert.message
+        assert "recovery.md" in alert.remediation
+
     def test_unknown_events_still_alert(self) -> None:
         alert = alert_for(self.event("something.new"))
 

@@ -244,6 +244,8 @@ class SystemEventRepository(Protocol):
 
 
 class HeartbeatRepository(Protocol):
+    async def latest(self, instance: str) -> datetime | None: ...
+
     async def upsert(
         self, *, component: str, instance: str, beat_at: datetime, status: str, detail: str
     ) -> None: ...

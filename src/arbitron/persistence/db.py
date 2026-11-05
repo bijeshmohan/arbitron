@@ -23,6 +23,23 @@ class SchemaNotCurrentError(RuntimeError):
     """The database schema is not at the migration head this code expects."""
 
 
+# libpq connection settings. Without TCP keepalives a silently dropped network
+# leaves a connection "alive" for hours (OS default 7200 s): the soak's network
+# drill (2026-11-02) left the single-instance lock held by a dead process.
+# Keepalives detect a dead server within about a minute, and tcp_user_timeout
+# bounds how long sent data may go unacknowledged before the socket fails.
+CONNECT_ARGS: dict[str, str | int] = {
+    # All timestamps are timestamptz; make the session explicit about UTC.
+    "options": "-c timezone=UTC",
+    "connect_timeout": 10,
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
+    "tcp_user_timeout": 60_000,  # milliseconds
+}
+
+
 def create_engine(url: str, *, pool_size: int = 5) -> AsyncEngine:
     """Create the async engine. Only ``postgresql+psycopg://`` URLs are accepted."""
     parsed = make_url(url)
@@ -33,8 +50,7 @@ def create_engine(url: str, *, pool_size: int = 5) -> AsyncEngine:
         parsed,
         pool_size=pool_size,
         pool_pre_ping=True,
-        # All timestamps are timestamptz; make the session explicit about UTC.
-        connect_args={"options": "-c timezone=UTC"},
+        connect_args=dict(CONNECT_ARGS),
     )
 
 

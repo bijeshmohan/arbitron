@@ -2,14 +2,14 @@
 
 import asyncio
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from arbitron.application.kill_switch import KillSwitchService
-from arbitron.application.paper_runtime import PaperRuntime
+from arbitron.application.paper_runtime import PaperRuntime, record_restart_gap
 from arbitron.application.paper_session import PaperSession
 from arbitron.application.supervisor import FatalTaskError, Supervisor, TaskContext, TaskSpec
 from arbitron.clocks import ManualClock
@@ -487,3 +487,58 @@ class TestPaperRuntime:
 
         assert not readiness.ready
         assert readiness.checks["kill_switch"] == "kill switch recovery_review"
+
+
+class TestRestartGap:
+    """docs/soak-test.md drill day 8: an outage that took the database away."""
+
+    async def beat(self, uow: UowFactory, at_: datetime, instance: str = "default") -> None:
+        async with uow() as tx:
+            await tx.heartbeats.upsert(
+                component="trading", instance=instance, beat_at=at_, status="ok", detail=""
+            )
+            await tx.commit()
+
+    async def gap_events(self, uow: UowFactory) -> list[SystemEvent]:
+        async with uow() as tx:
+            events = await tx.system_events.list_recent(50)
+        return [e for e in events if e.event_type == "runtime.restarted_after_gap"]
+
+    async def test_long_gap_is_recorded(self, uow: UowFactory) -> None:
+        await self.beat(uow, NOW - timedelta(minutes=50))
+
+        gap = await record_restart_gap(uow, ManualClock(NOW), instance="default")
+
+        assert gap == timedelta(minutes=50)
+        (event,) = await self.gap_events(uow)
+        assert event.severity is Severity.CRITICAL
+        assert event.payload["gap"] == "0:50:00"
+
+    async def test_short_restart_is_not_an_incident(self, uow: UowFactory) -> None:
+        await self.beat(uow, NOW - timedelta(seconds=40))
+
+        assert await record_restart_gap(uow, ManualClock(NOW), instance="default") is None
+        assert await self.gap_events(uow) == []
+
+    async def test_first_start_and_other_instances_are_ignored(self, uow: UowFactory) -> None:
+        assert await record_restart_gap(uow, ManualClock(NOW), instance="default") is None
+        await self.beat(uow, NOW - timedelta(hours=3), instance="other")
+
+        assert await record_restart_gap(uow, ManualClock(NOW), instance="default") is None
+
+    async def test_runtime_alerts_on_restart_after_a_gap(
+        self, engine: AsyncEngine, uow: UowFactory
+    ) -> None:
+        await self.beat(uow, NOW - timedelta(minutes=50))
+        venue = FakeVenue(ManualClock(NOW), history(200))
+        notifier = RecordingNotifier()
+        runtime = await runtime_for(engine, uow, venue, notifier, lock=FakeLock())
+        stop = asyncio.Event()
+
+        run = asyncio.create_task(runtime.run(stop))
+        await wait_for(lambda: any("Restarted after downtime" in t for t in notifier.titles))
+        stop.set()
+        await asyncio.wait_for(run, timeout=10)
+
+        alert = next(a for a in notifier.alerts if "Restarted after downtime" in a.title)
+        assert "gap=0:50:00" in alert.message

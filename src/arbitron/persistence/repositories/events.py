@@ -46,6 +46,12 @@ class SqlHeartbeatRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def latest(self, instance: str) -> datetime | None:
+        """The most recent heartbeat of any task of ``instance``."""
+        return await self._session.scalar(
+            select(func.max(HeartbeatRow.last_beat)).where(HeartbeatRow.instance == instance)
+        )
+
     async def upsert(
         self, *, component: str, instance: str, beat_at: datetime, status: str, detail: str
     ) -> None:

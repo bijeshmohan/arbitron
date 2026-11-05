@@ -238,7 +238,12 @@ class SoakEvaluator:
         unknown = count("order.submission_unknown") + count("reconciliation.submission_unknown")
         report.add("ambiguous submissions", unknown == 0, f"{unknown} submission_unknown event(s)")
         crashes = count("supervisor.")
-        report.add("task crashes", crashes == 0, f"{crashes} supervisor event(s)")
+        gaps = count("runtime.restarted_after_gap")
+        report.add(
+            "task crashes and downtime",
+            crashes + gaps == 0,
+            f"{crashes} supervisor event(s), {gaps} restart(s) after a gap",
+        )
 
     async def _kill_switch(self, session: AsyncSession, report: SoakReport) -> None:
         automatic = list(

@@ -152,6 +152,12 @@ _PLAYBOOK: Final[tuple[tuple[str, str, str, str], ...]] = (
         "Run `arbitron orders unresolved`; most cases resolve automatically.",
     ),
     (
+        "runtime.restarted_after_gap",
+        "Restarted after downtime",
+        "Startup recovery and reconciliation ran before trading resumed.",
+        "Find the cause of the gap (logs, host, network, database); see docs/runbooks/recovery.md.",
+    ),
+    (
         "supervisor.restart_limit",
         "Task crashed repeatedly: session stopped",
         "The kill switch was tripped and the session stopped.",

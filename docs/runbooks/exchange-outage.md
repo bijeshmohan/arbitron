@@ -16,6 +16,11 @@
 - **If the database is also unreachable** (a full network loss), the
   instance lock is lost and the session stops. Docker restarts it, and
   startup recovery runs once the network is back (failure matrix #5, #15).
+  Nothing can be recorded or alerted while the database is down, so the
+  Telegram alert ("Restarted after downtime", with the gap) arrives when the
+  app is back. If the app restart-loops with "another paper session holds this
+  account's lock", see [recovery](recovery.md) → Locked out after a network
+  failure.
 
 **Operator**
 

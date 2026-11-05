@@ -237,3 +237,25 @@ async def test_cycle_in_the_unfinished_interval_is_not_counted(
 
     cycles = next(c for c in report.criteria if c.name == "trading cycles")
     assert cycles.detail.startswith("24/24 intervals with a cycle (100.00%")
+
+
+async def test_restart_after_a_gap_fails_the_downtime_criterion(
+    engine: AsyncEngine, uow: UowFactory
+) -> None:
+    await healthy_soak(uow)
+    async with uow() as tx:
+        await tx.system_events.append(
+            SystemEvent(
+                "runtime.restarted_after_gap",
+                Severity.CRITICAL,
+                "runtime",
+                START + timedelta(minutes=30),
+                "c",
+                {"gap": "0:50:00"},
+            )
+        )
+        await tx.commit()
+
+    report = await evaluate(engine)
+
+    assert failures(report) == ["task crashes and downtime"]

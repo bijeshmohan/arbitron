@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -79,3 +81,23 @@ async def test_check_works_for_both_key_signs(engine: AsyncEngine, account: str)
     lock = InstanceLock(engine, exchange_id="binance", account=f"{account}{suffix}", mode="paper")
     async with lock:
         await lock.check()
+
+
+async def test_unconfirmable_lock_counts_as_lost(engine: AsyncEngine) -> None:
+    """A silently dropped network makes the check hang (soak drill 2026-11-02)."""
+
+    class HangingConnection:
+        async def scalar(self, *_: object, **__: object) -> None:
+            await asyncio.sleep(60)
+
+    lock = InstanceLock(
+        engine, exchange_id="binance", account="main", mode="paper", check_timeout=0.05
+    )
+    async with lock:
+        real = lock._connection  # pyright: ignore[reportPrivateUsage]
+        lock._connection = HangingConnection()  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+        try:
+            with pytest.raises(LockLostError, match="not confirmed within"):
+                await lock.check()
+        finally:
+            lock._connection = real  # pyright: ignore[reportPrivateUsage]

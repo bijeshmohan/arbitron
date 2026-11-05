@@ -3,8 +3,13 @@
 The lock lives as long as one dedicated connection. If that connection drops,
 PostgreSQL releases the lock and another instance may acquire it, so callers
 must treat ``LockLostError`` from ``check()`` as a critical safety failure.
+
+``check()`` is bounded by a timeout: on a silently dropped network a query
+waits on TCP retransmission for minutes instead of failing (soak drill
+2026-11-02), and a lock that cannot be confirmed must count as lost.
 """
 
+import asyncio
 import hashlib
 from types import TracebackType
 from typing import Self
@@ -31,8 +36,17 @@ def lock_key(exchange_id: str, account: str, mode: str) -> int:
 class InstanceLock:
     """Async context manager holding the advisory lock on a dedicated connection."""
 
-    def __init__(self, engine: AsyncEngine, *, exchange_id: str, account: str, mode: str) -> None:
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        *,
+        exchange_id: str,
+        account: str,
+        mode: str,
+        check_timeout: float = 10.0,
+    ) -> None:
         self._engine = engine
+        self._check_timeout = check_timeout
         self.key = lock_key(exchange_id, account, mode)
         self._connection: AsyncConnection | None = None
 
@@ -60,16 +74,20 @@ class InstanceLock:
             msg = "instance lock is not held"
             raise LockLostError(msg)
         try:
-            held = await self._connection.scalar(
-                text(
-                    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
-                    "AND pid = pg_backend_pid() AND granted AND objsubid = 1 "
-                    "AND ((classid::bigint << 32) | objid::bigint) = :key)"
-                ),
-                {"key": self.key},
-            )
+            async with asyncio.timeout(self._check_timeout):
+                held = await self._connection.scalar(
+                    text(
+                        "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+                        "AND pid = pg_backend_pid() AND granted AND objsubid = 1 "
+                        "AND ((classid::bigint << 32) | objid::bigint) = :key)"
+                    ),
+                    {"key": self.key},
+                )
         except SQLAlchemyError as exc:
             msg = "instance lock connection failed"
+            raise LockLostError(msg) from exc
+        except TimeoutError as exc:
+            msg = f"instance lock not confirmed within {self._check_timeout} s"
             raise LockLostError(msg) from exc
         if not held:
             msg = f"instance lock {self.key} is no longer held"

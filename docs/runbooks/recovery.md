@@ -15,6 +15,45 @@ the session, and Docker then restarts the container.
 the restart limit tripped the switch, follow [kill-switch](kill-switch.md) to
 re-arm once the cause is understood.
 
+## Locked out after a network failure
+
+**Symptom.** The app restart-loops with `error: another paper session holds
+this account's lock`, and no other arbitron instance is running.
+
+**Cause.** The old process lost its network without closing its database
+connections, so PostgreSQL still holds its single-instance lock. TCP
+keepalives on the app and the server drop dead connections within about a
+minute, so this should clear by itself. Before that fix, it took the OS default
+of 2 hours (soak drill 2026-11-02).
+
+**Operator, if it hasn't cleared within 5 minutes**
+
+1. Make sure no other instance is running: `docker ps -a --filter name=arbitron-app`
+   should show only the restart-looping container.
+2. Find the lock holder and its sibling connections:
+
+   ```sh
+   $C exec postgres psql -U arbitron -d arbitron -c "
+     select a.pid, a.client_addr, a.backend_start, a.state_change
+     from pg_locks l join pg_stat_activity a using (pid) where l.locktype = 'advisory';"
+   $C exec postgres psql -U arbitron -d arbitron -c "
+     select pid, client_addr, backend_start, state_change from pg_stat_activity
+     where usename = 'arbitron_app' order by backend_start;"
+   ```
+
+3. The dead process's connections all have a `backend_start` from **before**
+   the outage and no activity since it began. Terminate **only those**, by PID:
+
+   ```sh
+   $C exec postgres psql -U arbitron -d arbitron -c "select pg_terminate_backend(<pid>);"
+   ```
+
+   Never terminate a connection unless you've confirmed its process is gone.
+   The lock is what stops two instances trading at once.
+
+**Verify:** `startup complete` with `reconciliation_clean: true` in the logs,
+`/ready` returns 200, and a "Restarted after downtime" alert arrives.
+
 ## Unknown submission (`SUBMISSION_UNKNOWN`)
 
 **Automatic.** New orders are blocked. Each reconciliation looks the order up

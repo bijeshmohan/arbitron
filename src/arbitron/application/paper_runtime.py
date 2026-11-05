@@ -12,7 +12,8 @@ Supervised tasks:
 | http           | no       | operational API (``arbitron.api.app``)                 |
 
 Startup recovery (``PaperSession.start``) completes before any task runs.
-Alerts start from *before* startup, so startup discrepancies are alerted too.
+Alerts start from *before* startup, so startup discrepancies are alerted too,
+as is a restart long after the last heartbeat (``record_restart_gap``).
 """
 
 import asyncio
@@ -36,6 +37,7 @@ from arbitron.application.supervisor import (
 )
 from arbitron.config.settings import ArbitronConfig
 from arbitron.domain.enums import KillSwitchState, Severity
+from arbitron.domain.events import SystemEvent
 from arbitron.domain.money import canonical_str
 from arbitron.execution.order_manager import Action
 from arbitron.execution.reconciler import ReconciliationReport
@@ -54,6 +56,41 @@ logger = logging.getLogger("arbitron.runtime")
 LOCK_CHECK_SECONDS = 15
 HEARTBEAT_PERSIST_SECONDS = 30
 ALERT_POLL_SECONDS = 5
+# A restart this long after the last heartbeat raises a critical alert. While
+# the database is unreachable nothing can be recorded or alerted, so the
+# outage is reported when the process is back (soak drill 2026-11-02).
+RESTART_GAP_ALERT = timedelta(minutes=5)
+
+
+async def record_restart_gap(
+    uow_factory: Callable[[], UnitOfWork],
+    clock: Clock,
+    *,
+    instance: str,
+    threshold: timedelta = RESTART_GAP_ALERT,
+) -> timedelta | None:
+    """Record a critical event if this instance was down longer than ``threshold``."""
+    now = clock.now()
+    async with uow_factory() as tx:
+        last = await tx.heartbeats.latest(instance)
+        if last is None or now - last <= threshold:
+            return None
+        gap = now - last
+        await tx.system_events.append(
+            SystemEvent(
+                event_type="runtime.restarted_after_gap",
+                severity=Severity.CRITICAL,
+                component="runtime",
+                occurred_at=now,
+                correlation_id=f"restart-{now.isoformat()}",
+                payload={
+                    "gap": str(timedelta(seconds=int(gap.total_seconds()))),
+                    "last_heartbeat": last.isoformat(),
+                },
+            )
+        )
+        await tx.commit()
+    return gap
 
 
 class PaperRuntime:
@@ -109,6 +146,11 @@ class PaperRuntime:
 
     async def run(self, stop: asyncio.Event) -> SupervisorOutcome:
         await self.dispatcher.start_from_now()
+        gap = await record_restart_gap(
+            self._uow_factory, self._clock, instance=self._config.paper.account
+        )
+        if gap is not None:
+            logger.warning("restarted after a gap", extra={"gap_seconds": gap.total_seconds()})
         startup = await self.session.start()
         self._observe_reconciliation(startup.reconciliation)
         logger.info(

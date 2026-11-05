@@ -33,7 +33,7 @@ docker compose -f deploy/compose.yaml exec app \
 | 5 | No venue rejections | 0 `exchange_rejected` | sizing respects venue rules |
 | 6 | Reconciliation discrepancies | 0 | the bot's records agree with the venue |
 | 7 | Ambiguous submissions | 0 `submission_unknown` outside the drills | submissions get definite answers |
-| 8 | Task crashes | 0 supervisor events outside the drills | no unhandled errors |
+| 8 | Task crashes and downtime | 0 supervisor events and 0 restarts after a gap of more than 5 minutes, outside the drills | no unhandled errors or unplanned outages |
 | 9 | No automatic kill-switch faults | 0 trips or reviews by the system other than a loss-limit trip | fail-closed paths only fire for real reasons |
 | 10 | Kill switch armed at the end | `armed` | the run ends in a trading-ready state |
 | 11 | Tasks alive at the end | every heartbeat less than 5 min old (only checked when the window ends now) | nothing has silently died |
@@ -69,8 +69,27 @@ runbook in `docs/runbooks/`:
 | 2 | Graceful restart: `docker compose -f deploy/compose.yaml restart app` | startup reconciliation is clean, cycles resume, nothing is ambiguous |
 | 4 | Hard kill: `docker compose -f deploy/compose.yaml kill app`, then `up -d` | as above; any order caught mid-submission is resolved automatically (failure matrix #6) |
 | 6 | Kill-switch drill: trip it through the API, check `/ready` returns 503, then review and re-arm from the CLI | the trip alert arrives, no orders while tripped, and re-arming needs a named operator |
-| 8 | Network outage: `docker network disconnect arbitron_default arbitron-app-1` for 10 min, then `docker network connect arbitron_default arbitron-app-1` | the app loses the venue *and* its database, the session stops without placing orders (failure matrix #5, #15) and Docker restarts it; once reconnected, startup reconciliation is clean and cycles resume. The Telegram alert may only arrive after reconnecting. |
+| 8 | Network outage: `docker network disconnect arbitron_default arbitron-app-1` for 10 min, then `docker compose -f deploy/compose.yaml up -d --no-build --no-deps --force-recreate app` (a plain `network connect` fails while the container is restart-looping) | the app loses the venue *and* its database, the session stops without placing orders (failure matrix #5, #15) and Docker restarts it; once reconnected, startup reconciliation is clean and cycles resume. The Telegram alert may only arrive after reconnecting. |
 | 9 | Database restore: `restore.sh verify` on the newest dump | the restore succeeds and the row counts are printed |
+
+## Confirmation run after the soak
+
+The day-8 network drill found that recovery from a full network loss wasn't
+automatic, and that the outage raised no alert. Following the operator's
+decision (2026-11-02, option A), the fixes are developed during the soak but
+deployed only after it ends, so the 14-day evidence stays on one build:
+
+- TCP keepalives on the app's database connections and on PostgreSQL, so dead
+  connections, and a dead process's lock, are dropped in about a minute;
+- a 10 s bound on the lock check, so a lock that can't be confirmed counts as
+  lost;
+- a critical "Restarted after downtime" alert when the app restarts more than
+  5 minutes after its last heartbeat, which is also counted by criterion 8.
+
+After 2026-11-08: deploy (this restarts `postgres` and `app`), repeat the
+day-8 network drill, and run a 3-day confirmation soak with the same
+criteria. Pass means the app recovers from the outage by itself within a few
+minutes, the alert arrives, and the confirmation run passes.
 
 ## Log
 
@@ -86,4 +105,6 @@ Fill this in during the soak (UTC).
 | 2026-10-27 01:56:02 | drill day 2: graceful restart (`docker compose restart app`) | **pass**: clean stop (6 tasks stopped, 0 stuck); healthy again at 01:56:10; startup reconciliation clean, 0 recovered orders; cycles resumed at the 02:00 close; `/ready` 200; no unresolved orders. Disk at 81% after the operator's cleanup. Found and fixed a soak-report bug (a cycle in the unfinished interval was counted, showing 447/446); the fix goes into the image at the day-4 rebuild. |
 | 2026-10-29 00:36:18 | drill day 4: hard kill (`docker compose kill app`, exit 137), then `up -d` on an image rebuilt from 1abcb52 | **pass**: healthy again at 00:36:30; startup reconciliation clean, 0 recovered orders, instance lock reacquired; cycles resumed at the 00:40 close; `/ready` 200; no unresolved orders; 0 critical events. The soak-report fix is now live (1008/1008). Disk 84% (7.3 GB free). |
 | 2026-10-31 04:33:46 | drill day 6: kill-switch trip via `POST /kill-switch/trip` (`api:bijesh.mohan`); re-armed from the CLI by Bijesh Mohan at 04:35:59 (review 04:35:58) | **pass**: `/ready` 503 while tripped; the `kill_switch.tripped` critical event sent a Telegram alert at 04:33:50 (4 s; received, confirmed by the operator); 0 orders while blocked; `/ready` 200 after arming. Finding: the API's operator field rejects spaces (`^[A-Za-z0-9_.@-]{1,64}$`) while the CLI accepts them, so one person appears as both `Bijesh Mohan` and `api:bijesh.mohan` in the audit trail. Cosmetic; noted for the review. |
+| 2026-11-02 03:21:04 | drill day 8: network outage (`docker network disconnect arbitron_default arbitron-app-1` for 10 min) | **safe, but did not recover by itself**. No orders during the outage; the reconciliation task failed on the unreachable database at 03:21:34; the process exited at about 03:25 and Docker restart-looped it (exit 2, database unreachable). Findings: (1) `docker network connect` failed at 03:31 because the container was mid-restart; recovered with `up -d --force-recreate app`. (2) **The app was then locked out** (`another paper session holds this account's lock`): PostgreSQL still held the old process's session advisory lock on a dead TCP connection, and with the OS keepalive at 7200 s it would have held it until about 05:20. Recovered at 04:10:49 by terminating the 4 dead backends (all from the old process, started 2026-10-29 00:36, silent since 03:21); healthy at 04:10:58, startup reconciliation clean, `/ready` 200, cycles resumed 04:15. (3) **No Telegram alert at all**: with the database down, no critical event could be recorded, and after recovery nothing recorded the outage, so the soak's task-crash criterion also shows 0 for a real crash. Gap 03:20 to 04:11 (50 min); cycle coverage 99.56%. |
+| 2026-11-03 02:16:34 | drill day 9: database restore (`restore.sh verify` on `arbitron-20261102T080308Z.dump`) | **pass**: restored into a scratch database at schema revision 29b951c26216 (the live head); candles 3592, signals 105, orders 95, fills 86, positions 1, equity snapshots 2673, system events 25. The 86 fills match the 86 filled orders (the other 9 orders are the pre-window `kill_switch_not_armed` rejections). Scratch database dropped; the live stack was untouched. |
 | | | |
