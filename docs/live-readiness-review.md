@@ -10,15 +10,25 @@ Status key: **done** (evidence linked), **in progress**, **operator**
 (needs a human decision or action), **blocker** (must be resolved before any
 live change is even proposed).
 
+## Outcome (2026-11-12)
+
+**Phase 12 is closed as paper-ready, no live approval.** The system has passed
+a 14-day paper soak, a 3-day confirmation run after the outage fix, and all
+six drills. It is not approved for live trading, and the sign-off below stays
+unsigned. These stay open, all needing the operator: item 2 (a real strategy
+with out-of-sample results), item 3 (risk limit values), item 4 (exchange
+account and key restrictions), item 8 (sign-off), and acceptance of the
+residual risks. The operator chose to revisit strategies later.
+
 ## Checklist
 
 | # | Item (plan §22, Phase 12) | Status | Evidence / what remains |
 |---|---------------------------|--------|-------------------------|
-| 1 | Sustained paper soak with a predefined duration and thresholds | done; confirmation pending | 14 days, 2026-10-25 12:45 to 2026-11-08 12:45 UTC: **PASS** on every criterion fixed in advance, plus the four operator checks ([soak-test.md](soak-test.md) → Log). The day-8 network drill needed manual recovery and raised no alert; the fix (904d850) is to be deployed, re-drilled, and confirmed by a 3-day run. |
+| 1 | Sustained paper soak with a predefined duration and thresholds | done | 14 days, 2026-10-25 12:45 to 2026-11-08 12:45 UTC: **PASS** on every criterion fixed in advance, plus the four operator checks ([soak-test.md](soak-test.md) → Log). The day-8 network drill needed manual recovery and raised no alert; the fix (904d850) was deployed, re-drilled (pass) and confirmed by a 3-day run, 2026-11-09 to 2026-11-12: **PASS**. |
 | 2 | Strategy evaluation methodology and out-of-sample results | **blocker** | No strategy has been chosen for live. `sma_cross` is a software integration fixture and is refused in live mode (`tests/unit/test_strategy.py::test_fixture_strategy_refused_in_live`). Method available: backfilled history, an in-sample sweep, then an out-of-sample check (`backtest sweep --split`, README → Backtesting). Before any live proposal, the operator must pick a strategy, record the out-of-sample results, and accept that they are not evidence of future returns. |
 | 3 | Risk limits and kill-switch behavior | operator | Behavior: the kill switch is durable. It trips automatically on loss or drawdown limits, authentication failure and the restart limit, and goes to review on discrepancies. Only a named operator can re-arm, from the CLI ([runbooks/kill-switch.md](runbooks/kill-switch.md), `docs/failure-matrix.md` #4, #14, #17). The **values** (order notional, exposures, daily loss, drawdown, reserve) are still example values and must be set by the operator. Also drilled during the soak (day 6). |
 | 4 | Exchange account permissions and key storage | operator | Decided 2026-10-24: a **dedicated Binance sub-account** used only by the bot, starting flat in every configured base asset. Key: spot trading only, no withdrawals or transfers, restricted to the host's IP, stored as a secret file (never in env or source) ([runbooks/credential-rotation.md](runbooks/credential-rotation.md)). Still to confirm: account eligibility and KYC in India, and that the sub-account supports API keys with these restrictions. |
-| 5 | Recovery drill and database restore drill | in progress | Scheduled during the soak: graceful restart (day 2, pass), hard kill (day 4, pass), network outage (day 8: safe, but needed manual recovery and raised no alert; fixed in 904d850 and **re-drilled 2026-11-09: pass**, self-recovering in about a minute with an alert; 3-day confirmation run until 2026-11-12), `restore.sh verify` (day 9). Results go in the soak log. Already covered by automated tests: failure matrix rows #1–#17 (`tests/failure/`), and lost response and never-sent orders against the real sandbox ([sandbox-qualification.md](sandbox-qualification.md)). |
+| 5 | Recovery drill and database restore drill | done | Scheduled during the soak: graceful restart (day 2, pass), hard kill (day 4, pass), network outage (day 8: safe, but needed manual recovery and raised no alert; fixed in 904d850 and **re-drilled 2026-11-09: pass**, self-recovering in about a minute with an alert; 3-day confirmation run to 2026-11-12: pass), `restore.sh verify` (day 9). Results go in the soak log. Already covered by automated tests: failure matrix rows #1–#17 (`tests/failure/`), and lost response and never-sent orders against the real sandbox ([sandbox-qualification.md](sandbox-qualification.md)). |
 | 6 | Alert routing and operator runbooks | done, with gaps | Telegram, critical events only, deduplicated and rate-limited. Runbooks: [runbooks/](runbooks/README.md), covering the 8 situations in plan §23. Gaps are listed under residual risks (backup failures and alert delivery aren't monitored). |
 | 7 | Live mode cannot start without all explicit gates | done | Live mode is refused outright: `app.mode = "live"` and any `[live]` flag fail validation (`tests/unit/test_config.py::test_live_mode_is_refused`, `test_live_flags_refused_outside_live_mode`). The only authenticated adapter refuses anything but sandbox mode with testnet URLs (`tests/contract/test_binance_trading.py::TestSandboxOnly`). The plan §18 gates (explicit mode, acknowledgement, keys, approved config, healthy reconciliation, armed switch) are **not implemented**, because live mode doesn't exist yet. Implementing them is the future change this review would approve. |
 | 8 | Human approval before enabling any live order path | operator | Sign-off below. Unsigned. |
@@ -35,12 +45,12 @@ live change is even proposed).
 | Safety | No withdrawal permission | operator: key setup (item 4). Testnet keys cannot be restricted. |
 | Safety | No blind retry of ambiguous submissions | done: writes are sent once (`exchange/calls.py`); failure matrix #1–#3 |
 | Recovery | Startup and periodic reconciliation; review on unknown orders or discrepancies | done (Phase 7; sandbox qualified) |
-| Recovery | Restart and restore drills | in progress (soak) |
+| Recovery | Restart and restore drills | done (soak) |
 | Operations | Health and readiness, heartbeats, metrics, redacted logs, single instance | done (Phases 8, 10) |
 | Operations | Actionable alerts; backup, restore and incident runbooks | done, with gaps (item 6) |
 | Validation | Unit, integration, contract and failure-injection tests | done: CI on every push |
 | Validation | Backtest assumptions documented | done (plan §17.1.1, README) |
-| Validation | Paper soak completed | in progress |
+| Validation | Paper soak completed | done |
 | Validation | Sandbox qualification for the chosen venue | done (Phase 11) |
 | Validation | Human live-readiness review | operator |
 
