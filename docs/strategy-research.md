@@ -139,6 +139,55 @@ For each line and fold: selected parameters, in-sample return, out-of-sample
 return, drawdown, round trips, and the `buy_hold` return for that fold. All
 fold results are reported, pass or fail, in the log.
 
+## Forward paper test: trend_filter on ETH/USDT, 4h (pre-registered 2026-11-14)
+
+The nearest candidate from round 2 gets a forward test on the paper stack.
+This is **not tuning**: the parameters and criteria below are fixed now and
+nothing changes while the test runs. A config change ends the test and
+restarts it.
+
+- **Strategy:** `trend_filter` v1, `length = 100`, ETH/USDT, 4-hour candles.
+  100 is what the round 2 selection rule picked in each of the four folds, and
+  it is again the only qualifying set on all data to 2026-11-01.
+- **Account:** a fresh paper account `forward-eth-4h`, funded with 1000 USDT,
+  800 USDT per entry. Same costs as the backtests (the paper venue charges
+  0.1% fees and 5 bps slippage).
+- **Risk limits (paper values, not recommendations):** order notional and
+  exposure 1000 USDT, daily loss 300 USDT, drawdown 30% (the backtests ran
+  without limits). The wider limits mean the kill switch rarely interferes.
+- **Data freshness limit:** 1800 s (the 5-minute-candle default of 600 s
+  leaves only two 5-minute cycles per 4-hour candle to act on a signal, so one
+  slow ingest or a restart around a close would skip it).
+- **Start:** when the stack is redeployed with this config (see the log).
+  **Minimum duration: 4 weeks.** 8 weeks is better, and the review happens at 4.
+
+### What 4 weeks can and cannot show
+
+The trend filter makes a handful of round trips a month, so a 4-week return is
+mostly noise in either direction. Profit and loss over 4 weeks is **reported
+but not a pass or fail criterion**. The test checks that the strategy behaves
+as in the backtest, and that nothing breaks.
+
+### Criteria (all three required)
+
+1. **Operations:** `arbitron soak report` passes over the window (cycles,
+   candles, orders settled, fills, no venue rejections, no discrepancies, no
+   ambiguous submissions, no restarts after a gap, armed at the end).
+2. **Replay matches:** a backtest of the same strategy and parameters over
+   the same window produces the same signal sequence (side and candle) as the
+   paper run, and fills within 0.3% of the backtest's prices. Any difference
+   is explained in the log.
+3. **Bounded loss:** drawdown stays under 25%. The kill switch is not tripped
+   by the loss limits.
+
+Reported but not criteria: total return against `buy_hold` on ETH/USDT over
+the same window, win rate, round trips and fees paid.
+
+Passing means "worked as designed over this window". It does not approve the
+strategy for live trading. The profit question stays with round 2's evidence,
+which was a near-miss, so even a clean forward test leaves the live-readiness
+review's strategy item open for the operator to judge.
+
 ## Log
 
 | When | What | Result |
@@ -241,4 +290,5 @@ bar should be read in the light of the growing trial count (now 120). The
 nearest candidate, `trend_filter` on ETH 4h, would be the natural subject of
 a different kind of test (a forward paper run with the criteria fixed in
 advance), not of more parameter searching.
+| 2026-11-14 14:49:12 | **Forward paper test starts.** Image built from 209a5f4 plus the uncommitted research docs; `deploy/arbitron.toml` switched from `sma_cross` BTC/USDT 5m to `trend_filter` length 100, ETH/USDT 4h, account `forward-eth-4h`, entry 800 USDT. The old `sma_cross` paper account (`default`) is left as it was. The first deploy used a 600 s freshness limit; it was raised to 1800 s and redeployed at 14:49 before any signal, because 600 s allows only two cycles per 4h candle. Kill switch still armed (Bijesh Mohan, 2026-10-31). | healthy; startup reconciliation clean; account funded with 1000 USDT; market data blocked as stale until the 16:00 UTC candle closes (expected after a mid-candle start). **Window start 2026-11-14 14:49:12Z; review at 4 weeks: 2026-12-12.** |
 
