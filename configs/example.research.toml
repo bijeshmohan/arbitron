@@ -1,0 +1,111 @@
+# Strategy research configuration (backtests on 1-hour candles).
+# Copy to configs/research.toml (gitignored). The risk limits are deliberately
+# loose so a run is never halted by the kill switch: the full account is
+# invested, and drawdown is judged from the report instead. NOT recommended
+# financial limits, and not for paper or live trading.
+#
+# Financial values are quoted strings so they parse exactly as Decimal;
+# unquoted floats are rejected.
+
+[app]
+mode = "paper"
+environment = "development"
+timezone = "UTC"
+
+[exchange]
+id = "binance"
+sandbox = false
+spot_only = true
+symbols = ["BTC/USDT"]
+request_timeout_ms = 10000
+
+[strategy]
+id = "trend_filter"
+version = "1"
+timeframe = "1h"
+enabled = true
+
+# Research only. Overridden by --param on backtest runs.
+[strategy.parameters]
+length = 200
+
+# Risk limits. Example values for paper trading only; they are NOT recommended
+# financial limits. Amounts are in the quote currency (USDT here).
+[risk]
+trading_enabled = true
+max_order_notional = "1000"
+max_asset_exposure = "1000"
+max_total_exposure = "1000"
+max_open_orders = 2
+max_orders_per_hour = 10
+max_daily_loss = "1000"
+max_drawdown_pct = "100"
+max_spread_pct = "0.2"
+min_quote_reserve = "5"
+max_market_data_age_seconds = 600
+max_ticker_age_seconds = 10
+
+# Fixed quote amount per entry; buy only when flat, sell the whole position.
+# Orders are immediate-or-cancel limit orders within max_slippage_pct of the book.
+[sizing]
+entry_notional = "800"
+max_slippage_pct = "0.1"
+assumed_fee_pct = "0.1"
+
+[execution]
+allow_market_orders = false
+submission_timeout_seconds = 15
+reconciliation_interval_seconds = 60
+# Unknown submissions: NOT_PLACED only after the settle window and two
+# not-found lookups; escalate to the operator after the max age.
+unknown_order_settle_seconds = 30
+unknown_order_max_age_seconds = 900
+
+# Optional; these are the defaults.
+[market]
+close_grace_seconds = 5
+backfill_candles = 1000
+max_pages_per_sync = 20
+metadata_max_age_seconds = 3600
+max_clock_skew_ms = 1000
+request_concurrency = 2
+read_retry_attempts = 3
+
+# Paper venue simulation (paper mode only). These are the defaults.
+# Fills: best ask/bid moved against the order by slippage_bps, never past the
+# limit (IOC orders that would breach it expire). Fees in the received asset.
+[paper]
+account = "default"
+starting_balance = "1000"
+slippage_bps = "5"
+fee_pct = "0.1"
+
+# Backtest cost assumptions. These are the defaults (same costs as [paper]).
+# Fills happen at the next candle's open, around a synthetic quote of spread_bps.
+[backtest]
+starting_balance = "1000"
+spread_bps = "1"
+slippage_bps = "5"
+fee_pct = "0.1"
+
+# Operator alerts. Use "telegram" for any unattended run; it needs
+# ARBITRON_TELEGRAM_BOT_TOKEN and ARBITRON_TELEGRAM_CHAT_ID in the environment.
+# "log" only logs alerts (fine for trying things out).
+[alerts]
+channel = "log"
+min_severity = "critical"
+dedupe_minutes = 30
+max_per_hour = 20
+
+# Logs, metrics, health endpoints, task supervision. These are the defaults.
+[monitoring]
+http_host = "127.0.0.1"
+http_port = 9108
+log_format = "json"
+log_level = "INFO"
+task_max_restarts = 3
+task_restart_window_seconds = 600
+
+[live]
+enabled = false
+acknowledgement = false
