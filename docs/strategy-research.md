@@ -76,6 +76,69 @@ to beat buy-and-hold after costs. "No candidate passes" is a likely, valid
 result, and the correct response is to stay on paper trading or keep
 researching, not to loosen the criteria.
 
+## Round 2: wider test (pre-registered 2026-11-14)
+
+Written after round 1 and **before any round 2 backtest was run**. Round 1
+found nothing, on one asset in a falling year. This round asks the same
+question across several market regimes, two assets and two timeframes.
+
+**Contamination, stated up front.** I (the agent) and the operator have seen
+round 1's results, which covered BTC/USDT from 2024-11-14 to 2026-11-14, and
+both of us know roughly how crypto prices moved in earlier years. No
+out-of-sample period is perfectly clean. The 2025 fold below overlaps the
+period round 1 looked at, so it is the weakest evidence.
+
+### Setup (fixed)
+
+- **Assets:** BTC/USDT and ETH/USDT. **Timeframes:** 4h and 1d. 1h is dropped
+  (fees dominated it in round 1).
+- **Data:** 2019-01-01 to 2026-11-14 (end exclusive), from `market backfill`.
+- **Strategies and grids:** the same 24 parameter sets per (asset, timeframe)
+  as round 1, in candles of that timeframe. Plus the `buy_hold` baseline.
+  That is 24 sets x 2 assets x 2 timeframes = **96 new parameter sets**, on
+  top of round 1's 24: **120 trials in total**.
+- **Costs and sizing:** unchanged (fee 0.1%, slippage 5 bps, 1000 USDT
+  account, 800 USDT per entry).
+- **Walk-forward folds.** Four out-of-sample years: 2022, 2023, 2024, 2025.
+  For each, parameters are selected on all data from 2019-01-01 up to the
+  start of that year (expanding window), by the round 1 selection rule, and
+  the fold's year is then judged once. 2022 was a bear year, 2023 a recovery,
+  2024 a bull year, 2025 mixed (and partly seen).
+- **Selection rule per fold:** among a strategy's parameter sets with at
+  least 20 round trips (40 fills) in-sample and in-sample max drawdown under
+  30%, the highest in-sample total return. If none qualify, that strategy
+  has no entry for the fold and counts as flat (0% return, 0 trades). The
+  looser thresholds than round 1 reflect that daily candles trade rarely.
+
+### Pass criteria
+
+A **line** is one (strategy, asset, timeframe), judged over the four folds
+together. All of these are required:
+
+1. **Makes money outright:** the sum of the four out-of-sample fold returns is
+   positive. Losing less than the market is not enough.
+2. **Beats the baseline, or is a clearly better ride.** Either its summed
+   return exceeds `buy_hold`'s over the same four folds, or it earns at least
+   half of `buy_hold`'s summed return while its worst fold drawdown is under
+   half of `buy_hold`'s worst fold drawdown.
+3. **Bounded loss:** max drawdown under 25% in every fold.
+4. **Enough trades:** at least 20 round trips in total across the folds.
+5. **Consistent:** positive in at least 2 of the 4 folds.
+6. **Not luck on one asset:** the same (strategy, timeframe) line passes
+   criteria 1 to 5 on **both** BTC/USDT and ETH/USDT. The selected
+   parameters may differ.
+
+A candidate that passes everything is **not approved**. It goes to a forward
+paper test of at least 4 weeks, without retuning, and then to the operator's
+decisions. With 120 trials, one or two apparent passes can be luck: criterion
+6 exists to cut that, and it does not remove it.
+
+### Reporting
+
+For each line and fold: selected parameters, in-sample return, out-of-sample
+return, drawdown, round trips, and the `buy_hold` return for that fold. All
+fold results are reported, pass or fail, in the log.
+
 ## Log
 
 | When | What | Result |
