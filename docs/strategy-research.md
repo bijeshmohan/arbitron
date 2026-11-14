@@ -181,4 +181,64 @@ blocker. Options, in the order I would take them:
    this document goes up.
 3. Accept that a simple rule may not beat buy-and-hold on spot after costs,
    and decide whether the project's goal is still a live strategy.
+| 2026-11-14 | **Round 2 run as pre-registered.** Data: BTC/USDT and ETH/USDT, 4h and 1d candles, 2019-01-01 to 2026-11-14 (4h has 5 missing candles from exchange maintenance, e.g. 2020-02-19). 96 new parameter sets per fold set, 120 trials in total. 64 jobs: 48 walk-forward sweeps and 16 `buy_hold` runs. | see round 2 results below |
+
+## Round 2 results
+
+Summed over the four out-of-sample years 2022 to 2025 (account return, 800 USDT
+per entry; a year with no qualifying parameter set counts as flat). `buy_hold`
+summed: BTC +163.6% (4h) / +154.0% (1d), ETH +46.3% (4h) / +41.2% (1d).
+
+| Line | Sum OOS | Worst-fold drawdown | Round trips | Positive folds | Criteria 1-5 failed |
+|------|---------|---------------------|-------------|----------------|---------------------|
+| trend_filter BTC 4h | +53.5% | 27.4% | 176 | 2/4 | 2 (below baseline), 3 (drawdown over 25%) |
+| trend_filter ETH 4h | +62.2% | 26.6% | 149 | 3/4 | 3 (drawdown over 25%) |
+| trend_filter BTC 1d | +108.2% | 29.5% | 25 | 3/4 | 2, 3 |
+| trend_filter ETH 1d | 0 (flat) | 0 | 0 | 0/4 | 1, 2, 4, 5 |
+| breakout BTC 4h | +75.0% | 33.6% | 24 | 3/4 | 2, 3 |
+| breakout ETH 4h | +45.8% | 36.7% | 33 | 3/4 | 2 (just below the baseline's +46.3%), 3 |
+| breakout BTC 1d | -16.0% | 23.9% | 5 | 0/4 | 1, 2, 4, 5 |
+| breakout ETH 1d | 0 (flat) | 0 | 0 | 0/4 | 1, 2, 4, 5 |
+| mean_reversion BTC 4h | +36.7% | 9.1% | 9 | 2/4 | 2, 4 |
+| mean_reversion ETH 4h | 0 (flat) | 0 | 0 | 0/4 | 1, 2, 4, 5 |
+| mean_reversion BTC 1d | 0 (flat) | 0 | 0 | 0/4 | 1, 2, 4, 5 |
+| mean_reversion ETH 1d | +14.5% | 15.5% | 4 | 1/4 | 2, 4, 5 |
+
+**Criterion 6 (same strategy and timeframe passes on both assets): no
+strategy and timeframe passes on both. No candidate passes.** Only
+`trend_filter` ETH 4h passed criteria 1, 2, 4 and 5 on its own, and it failed
+criterion 3 by 1.6 points of drawdown (26.6% against a 25% limit). Its BTC
+twin failed on 2 and 3. The criteria stay as written.
+
+Per-fold detail (selected parameters, in-sample and out-of-sample returns,
+buy-and-hold) is in the analysis output; the pattern is:
+
+- **2022 (bear):** `trend_filter` ETH 4h made +12.5% while buy-and-hold lost
+  54%. Its BTC twin lost 22%, and breakout lost 22% to 27%. Staying out
+  helps in a bear year only if the rule actually exits in time.
+- **2023 and 2024 (recovery and bull):** every trend and breakout line that
+  traded made money, but on BTC earned roughly a third to two-thirds of
+  buy-and-hold (for example +58% against +123% in 2023).
+- **2025 (mixed, partly seen):** results ranged from +0.7% to +14.5%, except
+  `trend_filter` 4h (about -21% on both assets) and `breakout` BTC 1d (-16%);
+  buy-and-hold lost 5% to 9%.
+- The 1d lines mostly sat out: with 2019-2021 as the only in-sample history
+  for the 2022 fold, few parameter sets reached 20 round trips, so several
+  folds were flat. This is a limit of the pre-registered rule, not a result
+  about daily candles. A different rule would count as a new trial.
+
+## Where this leaves things (end of round 2)
+
+The honest summary: **simple trend and breakout rules on 4-hour candles were
+profitable in most years, but they give up a large part of the upside, and
+they have drawdowns of 25% to 37% in the bad years.** No line meets the
+pre-registered bar of beating or closely matching buy-and-hold on both assets
+with a bounded loss. That is consistent with the common finding that simple
+rules mostly reduce risk, they don't create returns.
+
+Further variants are available, but each is another trial, and each time the
+bar should be read in the light of the growing trial count (now 120). The
+nearest candidate, `trend_filter` on ETH 4h, would be the natural subject of
+a different kind of test (a forward paper run with the criteria fixed in
+advance), not of more parameter searching.
 
