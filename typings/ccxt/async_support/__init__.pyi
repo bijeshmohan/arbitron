@@ -5,6 +5,7 @@ class Exchange:
     has: dict[str, object]
     precisionMode: int
     urls: dict[str, Any]
+    options: dict[str, Any]
     markets: dict[str, dict[str, object]] | None
     def __init__(self, config: dict[str, Any] = ...) -> None: ...
     def set_sandbox_mode(self, enabled: bool) -> None: ...
