@@ -37,9 +37,12 @@ the fees differ.
 
 ## Separate data
 
-Candles, markets and paper accounts are keyed by venue, so Binance and
-Hyperliquid history never mix. Use a separate paper `account` per venue (the
-example uses `hyperliquid`).
+Candles and market rules are keyed by venue, so Binance and Hyperliquid
+history never mix. **Paper accounts are keyed by name only**, not by venue:
+two configs with the same `[paper] account` in one database share balances,
+holdings and orders. A quote-currency mismatch (USDT against USDC) is refused
+at funding, but a same-quote mix is not. Always give each venue its own paper
+account (the example uses `hyperliquid`).
 
 ## Checks
 
@@ -59,5 +62,11 @@ with nothing shared with the deployed paper stack.
 | Paper session, 5m, 31 minutes | startup reconciliation clean, account funded with 1000 USDC; 7 cycles, one every 5 minutes, all `market_data_ok: true`, quality OK on both symbols; 0 warnings or errors; clean stop (6 tasks stopped, 0 stuck). No signals (no crossover in the window), so no paper orders. |
 | Ticker against the live book | 10 rounds x 2 symbols: the adapter's ticker matched an independent raw `l2Book` request exactly in 16 of 20; the other 4 came from a snapshot about 0.5 s newer and differed by at most 2 bps. Spreads 0.17 to 2.4 bps. |
 
-Not covered by phase 1: paper fills against the live book on a real order
-(no signal fired), and anything authenticated.
+Paper fills on the live book: no signal fired during the session, so the fill
+model is checked on a recorded live BTC/USDC book instead
+(`test_paper_fills_on_the_recorded_live_book`): best bid 58,740 and ask 58,741,
+5 bps slippage, tick 1, fee 0.07%. A 0.01 BTC buy fills at 58,771 paying
+0.000007 BTC; a sell fills at 58,710 paying 0.41097 USDC.
+
+Not covered by phase 1: a paper order placed by a running session, and
+anything authenticated.

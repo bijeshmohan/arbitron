@@ -9,10 +9,12 @@ import pytest
 
 from arbitron.clocks import ManualClock
 from arbitron.config.settings import ArbitronConfig
+from arbitron.domain.enums import OrderType, Side, TimeInForce
 from arbitron.domain.market import Timeframe
 from arbitron.exchange.ccxt_adapter import CcxtMarketData, create_market_data, venue_options
 from arbitron.exchange.mapping import datetime_from_ms, ticker_from_order_book
 from arbitron.ports import errors as venue
+from arbitron.simulation.fill_model import FillModel
 from tests.contract.conftest import (
     HyperliquidTransport,
     hyperliquid_with_transport,
@@ -31,6 +33,7 @@ def hl_config() -> ArbitronConfig:
     data = example_data()
     data["exchange"].update({"id": "hyperliquid", "symbols": ["BTC/USDC", "ETH/USDC"]})
     data["strategy"]["timeframe"] = "4h"
+    del data["paper"]["fee_pct"]  # the Binance example's explicit 0.1 would win; use the venue's
     return ArbitronConfig.model_validate(data)
 
 
@@ -101,3 +104,39 @@ def test_order_book_without_timestamp_is_invalid() -> None:
 
     with pytest.raises(venue.InvalidVenueData):
         ticker_from_order_book(raw, exchange_id="hyperliquid", symbol="BTC/USDC")
+
+
+@pytest.mark.parametrize(
+    ("side", "limit", "price", "fee", "fee_currency"),
+    [
+        # Recorded live book: best bid 58740, best ask 58741, BTC/USDC tick 1.
+        # 5 bps slippage, then rounded to the tick against the trader.
+        (Side.BUY, "58800", Decimal(58771), Decimal("0.000007"), "BTC"),
+        (Side.SELL, "58700", Decimal(58710), Decimal("0.41097"), "USDC"),
+    ],
+)
+async def test_paper_fills_on_the_recorded_live_book(
+    hl: CcxtMarketData, side: Side, limit: str, price: Decimal, fee: Decimal, fee_currency: str
+) -> None:
+    config = hl_config()
+    markets = await hl.load_markets()
+    ticker = await hl.fetch_ticker("BTC/USDC")
+    model = FillModel(slippage_bps=config.paper.slippage_bps, fee_rate=config.paper_fee_pct / 100)
+
+    result = model.fill(
+        side=side,
+        order_type=OrderType.LIMIT,
+        time_in_force=TimeInForce.IOC,
+        amount=Decimal("0.01"),
+        limit_price=Decimal(limit),
+        ticker=ticker,
+        market=markets["BTC/USDC"],
+    )
+
+    assert config.paper_fee_pct == Decimal("0.07")
+    assert (result.filled, result.price, result.fee, result.fee_currency) == (
+        Decimal("0.01"),
+        price,
+        fee,
+        fee_currency,
+    )
