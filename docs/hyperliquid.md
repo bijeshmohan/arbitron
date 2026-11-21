@@ -47,6 +47,17 @@ example uses `hyperliquid`).
   (fixtures in `tests/fixtures/hyperliquid/`, re-recorded with `record.py` there).
 - Opt-in live check: `ARBITRON_LIVE_EXCHANGE_TESTS=1 uv run pytest tests/live/test_hyperliquid_public.py`.
 
-## Phase 1 verification
+## Phase 1 verification (2026-11-21)
 
-To be filled in by the manual verification run.
+Run on the reference host against a separate dev database (`arbitron_hl`),
+with nothing shared with the deployed paper stack.
+
+| Check | Result |
+|-------|--------|
+| Backfill, 4h, from 2024-01-01 | BTC/USDC 3,936 candles from 2025-02-03 (leading gap reported from 2024-01-01 to 2025-02-02 20:00); ETH/USDC 3,627 candles from 2025-03-26 (gap to 2025-03-26 08:00). No crash, no loop. |
+| Backtest, 2025-03-27 to 2026-11-21 | ran on 7,282 candles; assumptions show `fee pct: 0.0700`; the `sma_cross` fixture made 128 round trips (plumbing only; the result is not evaluated) |
+| Paper session, 5m, 31 minutes | startup reconciliation clean, account funded with 1000 USDC; 7 cycles, one every 5 minutes, all `market_data_ok: true`, quality OK on both symbols; 0 warnings or errors; clean stop (6 tasks stopped, 0 stuck). No signals (no crossover in the window), so no paper orders. |
+| Ticker against the live book | 10 rounds x 2 symbols: the adapter's ticker matched an independent raw `l2Book` request exactly in 16 of 20; the other 4 came from a snapshot about 0.5 s newer and differed by at most 2 bps. Spreads 0.17 to 2.4 bps. |
+
+Not covered by phase 1: paper fills against the live book on a real order
+(no signal fired), and anything authenticated.
