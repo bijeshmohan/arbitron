@@ -16,6 +16,7 @@ import ccxt.async_support as ccxt_async
 
 from arbitron.config.settings import ArbitronConfig
 from arbitron.domain.market import Candle, Market, Ticker, Timeframe
+from arbitron.domain.venues import ClockSource, TickerSource, VenueProfile, venue_profile
 from arbitron.exchange.calls import VenueCaller
 from arbitron.exchange.capabilities import VenueCapabilities
 from arbitron.exchange.mapping import (
@@ -24,6 +25,7 @@ from arbitron.exchange.mapping import (
     datetime_to_ms,
     market_from_ccxt,
     ticker_from_ccxt,
+    ticker_from_order_book,
 )
 from arbitron.exchange.retry import RetryPolicy, Sleep
 from arbitron.ports.clock import Clock
@@ -62,9 +64,11 @@ class CcxtMarketData:
         concurrency: int,
         sleep: Sleep = asyncio.sleep,
         rng: random.Random | None = None,
+        profile: VenueProfile | None = None,
     ) -> None:
         self._exchange = exchange
         self.exchange_id = exchange_id
+        self._profile = profile if profile is not None else venue_profile(exchange_id)
         self._symbols = tuple(symbols)
         self._clock = clock
         self._close_grace = close_grace
@@ -137,10 +141,21 @@ class CcxtMarketData:
 
     async def fetch_ticker(self, symbol: str) -> Ticker:
         self._require_symbol(symbol)
+        if self._profile.ticker_source is TickerSource.ORDER_BOOK:
+            return await self._ticker_from_book(symbol)
         raw = await self._call("fetch_ticker", lambda: self._exchange.fetch_ticker(symbol))
         return ticker_from_ccxt(raw, exchange_id=self.exchange_id, symbol=symbol)
 
+    async def _ticker_from_book(self, symbol: str) -> Ticker:
+        raw = await self._call(
+            "fetch_order_book", lambda: self._exchange.fetch_order_book(symbol, 1)
+        )
+        return ticker_from_order_book(raw, exchange_id=self.exchange_id, symbol=symbol)
+
     async def fetch_time(self) -> datetime:
+        if self._profile.clock_source is ClockSource.ORDER_BOOK:
+            # The venue stamps each book snapshot; there is no server-time endpoint.
+            return (await self._ticker_from_book(self._symbols[0])).timestamp
         value = await self._call("fetch_time", self._exchange.fetch_time)
         if value is None:
             msg = "venue returned no server time"
@@ -174,6 +189,7 @@ def create_market_data(
         request_timeout=timedelta(milliseconds=config.exchange.request_timeout_ms),
         retry=RetryPolicy(attempts=config.market.read_retry_attempts),
         concurrency=config.market.request_concurrency,
+        profile=config.venue,
     )
     adapter.capabilities.require_market_data(config.venue)
     return adapter

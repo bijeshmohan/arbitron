@@ -164,6 +164,38 @@ def ticker_from_ccxt(raw: Mapping[str, object], *, exchange_id: str, symbol: str
         raise InvalidVenueData(msg) from exc
 
 
+def ticker_from_order_book(raw: Mapping[str, object], *, exchange_id: str, symbol: str) -> Ticker:
+    """A ticker from the top of a CCXT order book, for venues with no usable ticker.
+
+    An empty side gives ``None`` for that price; callers already refuse to
+    trade without a quote. The book's own venue timestamp is required.
+    """
+    bids = raw.get("bids")
+    asks = raw.get("asks")
+    try:
+        return Ticker(
+            exchange_id=exchange_id,
+            symbol=symbol,
+            bid=_top_price(bids, "bids"),
+            ask=_top_price(asks, "asks"),
+            last=None,
+            timestamp=datetime_from_ms(raw.get("timestamp"), "timestamp"),
+        )
+    except DomainError as exc:
+        msg = f"{symbol}: invalid order book: {exc}"
+        raise InvalidVenueData(msg) from exc
+
+
+def _top_price(levels: object, name: str) -> Decimal | None:
+    if not isinstance(levels, Sequence) or isinstance(levels, str):
+        msg = f"order book {name} is not a list"
+        raise InvalidVenueData(msg)
+    if not levels:
+        return None
+    level = cast("Sequence[object]", levels[0])
+    return optional_decimal(level[0], f"{name}[0].price")
+
+
 # Binance spot order statuses (the venue's own strings, kept as ``raw_status``).
 # Closed statuses split on whether anything filled, matching the internal
 # distinction between e.g. EXPIRED and PARTIALLY_FILLED_CLOSED.
