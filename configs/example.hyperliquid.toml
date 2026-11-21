@@ -1,0 +1,111 @@
+# Example paper-trading configuration on Hyperliquid spot (see docs/hyperliquid.md).
+# Values illustrate the configuration shape only; they are NOT recommended
+# financial limits. Copy to configs/hyperliquid.toml (gitignored) and set your own.
+# Quote currency is USDC. BTC and ETH here are Unit-bridged wrapped assets.
+#
+# Financial values are quoted strings so they parse exactly as Decimal;
+# unquoted floats are rejected.
+
+[app]
+mode = "paper"
+environment = "development"
+timezone = "UTC"
+
+[exchange]
+id = "hyperliquid"
+sandbox = false
+spot_only = true
+symbols = ["BTC/USDC", "ETH/USDC"]
+request_timeout_ms = 10000
+
+[strategy]
+id = "sma_cross"
+version = "1"
+timeframe = "4h"
+enabled = true
+
+# sma_cross is a software integration fixture, not a trading recommendation.
+[strategy.parameters]
+fast = 10
+slow = 30
+
+# Risk limits. Example values for paper trading only; they are NOT recommended
+# financial limits. Amounts are in the quote currency (USDC here).
+[risk]
+trading_enabled = true
+max_order_notional = "50"
+max_asset_exposure = "100"
+max_total_exposure = "100"
+max_open_orders = 2
+max_orders_per_hour = 6
+max_daily_loss = "10"
+max_drawdown_pct = "5"
+max_spread_pct = "0.2"
+min_quote_reserve = "10"
+max_market_data_age_seconds = 600
+max_ticker_age_seconds = 10
+
+# Fixed quote amount per entry; buy only when flat, sell the whole position.
+# Orders are immediate-or-cancel limit orders within max_slippage_pct of the book.
+[sizing]
+entry_notional = "25"
+max_slippage_pct = "0.1"
+assumed_fee_pct = "0.07"
+
+[execution]
+allow_market_orders = false
+submission_timeout_seconds = 15
+reconciliation_interval_seconds = 60
+# Unknown submissions: NOT_PLACED only after the settle window and two
+# not-found lookups; escalate to the operator after the max age.
+unknown_order_settle_seconds = 30
+unknown_order_max_age_seconds = 900
+
+# Optional; these are the defaults.
+[market]
+close_grace_seconds = 5
+backfill_candles = 1000
+max_pages_per_sync = 20
+metadata_max_age_seconds = 3600
+max_clock_skew_ms = 1000
+request_concurrency = 2
+read_retry_attempts = 3
+
+# Paper venue simulation (paper mode only). These are the defaults.
+# Fills: best ask/bid moved against the order by slippage_bps, never past the
+# limit (IOC orders that would breach it expire). Fees in the received asset.
+# fee_pct is left unset: Hyperliquid's default taker fee (0.07%) applies.
+[paper]
+account = "hyperliquid"
+starting_balance = "1000"
+slippage_bps = "5"
+
+# Backtest cost assumptions. These are the defaults (same costs as [paper]).
+# Fills happen at the next candle's open, around a synthetic quote of spread_bps.
+# fee_pct unset: the venue default applies, as for [paper].
+[backtest]
+starting_balance = "1000"
+spread_bps = "1"
+slippage_bps = "5"
+
+# Operator alerts. Use "telegram" for any unattended run; it needs
+# ARBITRON_TELEGRAM_BOT_TOKEN and ARBITRON_TELEGRAM_CHAT_ID in the environment.
+# "log" only logs alerts (fine for trying things out).
+[alerts]
+channel = "log"
+min_severity = "critical"
+dedupe_minutes = 30
+max_per_hour = 20
+
+# Logs, metrics, health endpoints, task supervision. These are the defaults.
+[monitoring]
+http_host = "127.0.0.1"
+http_port = 9118  # 9108 is the deployed Binance app on the reference host
+log_format = "json"
+log_level = "INFO"
+task_max_restarts = 3
+task_restart_window_seconds = 600
+
+[live]
+enabled = false
+acknowledgement = false

@@ -268,6 +268,12 @@ judged against criteria fixed in advance, plus drills and a signed checklist.
 - [docs/runbooks/](docs/runbooks/README.md): startup, shutdown, recovery, kill
   switch, exchange outage, database restore, credential rotation, incidents
 
+## Venues
+
+Binance spot (market data, backtests, paper, sandbox qualification) and
+Hyperliquid spot (market data, backtests and paper only for now). See
+[docs/hyperliquid.md](docs/hyperliquid.md) for how Hyperliquid differs.
+
 ## Backtesting
 
 Backtests read only from the database, so first backfill history from Binance

@@ -319,3 +319,15 @@ def test_unknown_exchange_is_a_config_error() -> None:
 
     with pytest.raises(ValidationError, match=r"supported: \['binance', 'hyperliquid'\]"):
         ArbitronConfig.model_validate(data)
+
+
+def test_example_hyperliquid_config_is_valid() -> None:
+    config = load_config(EXAMPLE_PAPER.with_name("example.hyperliquid.toml"))
+
+    assert config.app.mode is Mode.PAPER
+    assert config.exchange.id == "hyperliquid"
+    assert config.exchange.symbols == ("BTC/USDC", "ETH/USDC")
+    assert config.paper_fee_pct == Decimal("0.07")
+    assert config.backtest_fee_pct == Decimal("0.07")
+    assert config.sizing.assumed_fee_pct == Decimal("0.07")
+    assert config.monitoring.http_port != 9108  # the deployed app holds 9108 on this host
