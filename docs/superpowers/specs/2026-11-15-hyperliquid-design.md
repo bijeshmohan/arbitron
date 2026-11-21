@@ -1,6 +1,6 @@
 # Hyperliquid spot support: design
 
-Status: draft for operator review. Branch: `feature/hyperliquid`. No code is
+Status: approved by the operator 2026-11-21. Branch: `feature/hyperliquid`. No code is
 written until this spec and the implementation plan are approved.
 
 ## 1. Goal and scope
@@ -190,8 +190,8 @@ feature branch.
 | Short candle history limits backtests | docs say so; Binance history remains the longer proxy, labelled as such |
 | Tax and legal status in India | operator to confirm with a professional; out of scope for the software |
 
-## 11. Open questions for the operator
+## 11. Decisions on the open questions (operator, 2026-11-21)
 
-1. Which markets to start with: BTC/USDC and ETH/USDC (proposed).
-2. Whether to name the first Hyperliquid paper strategy now or leave it to the
-   research results (proposed: leave it; the venue work needs no strategy).
+1. Start with BTC/USDC and ETH/USDC.
+2. No Hyperliquid paper strategy is chosen as part of this work. It waits for
+   the research results. The venue work needs no strategy.
