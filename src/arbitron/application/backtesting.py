@@ -140,7 +140,7 @@ class BacktestService:
             starting_balance=bt.starting_balance,
             spread_bps=bt.spread_bps,
             slippage_bps=bt.slippage_bps,
-            fee_rate=bt.fee_pct / _HUNDRED,
+            fee_rate=config.backtest_fee_pct / _HUNDRED,
         )
         inputs = engine.Inputs(
             strategy=strategy,

@@ -31,6 +31,8 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from arbitron.domain.venues import UnknownVenueError, VenueProfile, venue_profile
+
 
 def _reject_float(value: object) -> object:
     # TOML floats are binary floating point; accepting them would silently
@@ -88,6 +90,15 @@ class ExchangeSection(_Section):
     spot_only: bool
     symbols: tuple[str, ...] = Field(min_length=1)
     request_timeout_ms: int = Field(ge=1_000, le=60_000)
+
+    @field_validator("id")
+    @classmethod
+    def _known_venue(cls, value: str) -> str:
+        try:
+            venue_profile(value)
+        except UnknownVenueError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
 
     @field_validator("spot_only")
     @classmethod
@@ -237,13 +248,14 @@ class PaperSection(_Section):
 
     - ``starting_balance``: quote funded once when the paper account is created.
     - ``slippage_bps``: fill price = best ask/bid moved against the order.
-    - ``fee_pct``: charged in the received asset, like Binance spot.
+    - ``fee_pct``: charged in the received asset, like Binance spot. Unset means
+      the venue's default taker fee (``ArbitronConfig.paper_fee_pct``).
     """
 
     account: str = Field(default="default", min_length=1, pattern=r"^[a-z0-9_-]+$")
     starting_balance: PositiveDecimal = Decimal(1000)
     slippage_bps: NonNegativeDecimal = Field(default=Decimal(5), le=500)
-    fee_pct: NonNegativeDecimal = Field(default=Decimal("0.1"), le=5)
+    fee_pct: NonNegativeDecimal | None = Field(default=None, le=5)
 
 
 class BacktestSection(_Section):
@@ -257,7 +269,7 @@ class BacktestSection(_Section):
     # Full bid/ask spread around the reference price (synthetic quotes).
     spread_bps: NonNegativeDecimal = Field(default=Decimal(1), le=500)
     slippage_bps: NonNegativeDecimal = Field(default=Decimal(5), le=500)
-    fee_pct: NonNegativeDecimal = Field(default=Decimal("0.1"), le=5)
+    fee_pct: NonNegativeDecimal | None = Field(default=None, le=5)
 
 
 class AlertChannel(StrEnum):
@@ -332,6 +344,22 @@ class ArbitronConfig(_Section):
             msg = "exchange.sandbox must be true if and only if app.mode is 'sandbox'"
             raise ValueError(msg)
         return self
+
+    @property
+    def venue(self) -> VenueProfile:
+        return venue_profile(self.exchange.id)
+
+    @property
+    def paper_fee_pct(self) -> Decimal:
+        """The paper venue's fee: the configured value, else the venue default."""
+        fee = self.paper.fee_pct
+        return self.venue.default_taker_fee_pct if fee is None else fee
+
+    @property
+    def backtest_fee_pct(self) -> Decimal:
+        """The backtest fee: the configured value, else the venue default."""
+        fee = self.backtest.fee_pct
+        return self.venue.default_taker_fee_pct if fee is None else fee
 
     def config_hash(self) -> str:
         """Stable SHA-256 of the canonical configuration, for run provenance."""
