@@ -1,11 +1,8 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from arbitron.domain.venues import VenueProfile
 from arbitron.ports.errors import UnsupportedCapability
-
-# Venues this build has adapter options and contract tests for. Anything else
-# is refused rather than run with untested assumptions (plan §8.2).
-SUPPORTED_VENUES = frozenset({"binance"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +21,7 @@ class VenueCapabilities:
     fetch_order: bool
     fetch_open_orders: bool
     fetch_my_trades: bool
+    fetch_order_book: bool
     create_order: bool
     cancel_order: bool
 
@@ -40,6 +38,7 @@ class VenueCapabilities:
             fetch_order=native("fetchOrder"),
             fetch_open_orders=native("fetchOpenOrders"),
             fetch_my_trades=native("fetchMyTrades"),
+            fetch_order_book=native("fetchOrderBook"),
             create_order=native("createOrder"),
             cancel_order=native("cancelOrder"),
         )
@@ -50,5 +49,5 @@ class VenueCapabilities:
             msg = f"venue lacks required capabilities: {', '.join(missing)}"
             raise UnsupportedCapability(msg)
 
-    def require_market_data(self) -> None:
-        self.require("fetch_ohlcv", "fetch_ticker", "fetch_time")
+    def require_market_data(self, profile: VenueProfile) -> None:
+        self.require(*profile.market_data_capabilities)

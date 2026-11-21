@@ -17,7 +17,7 @@ import ccxt.async_support as ccxt_async
 from arbitron.config.settings import ArbitronConfig
 from arbitron.domain.market import Candle, Market, Ticker, Timeframe
 from arbitron.exchange.calls import VenueCaller
-from arbitron.exchange.capabilities import SUPPORTED_VENUES, VenueCapabilities
+from arbitron.exchange.capabilities import VenueCapabilities
 from arbitron.exchange.mapping import (
     candles_from_ohlcv,
     datetime_from_ms,
@@ -37,8 +37,15 @@ _VENUE_OPTIONS: Mapping[str, dict[str, Any]] = {
         # Currency metadata needs authenticated endpoints and is not used.
         "fetchCurrencies": False,
     },
+    "hyperliquid": {
+        # Spot only: perpetuals are out of scope.
+        "fetchMarkets": {"types": ["spot"]},
+    },
 }
-_VENUE_CLASSES: Mapping[str, type[ccxt_async.Exchange]] = {"binance": ccxt_async.binance}
+_VENUE_CLASSES: Mapping[str, type[ccxt_async.Exchange]] = {
+    "binance": ccxt_async.binance,
+    "hyperliquid": ccxt_async.hyperliquid,
+}
 
 
 class CcxtMarketData:
@@ -168,7 +175,7 @@ def create_market_data(
         retry=RetryPolicy(attempts=config.market.read_retry_attempts),
         concurrency=config.market.request_concurrency,
     )
-    adapter.capabilities.require_market_data()
+    adapter.capabilities.require_market_data(config.venue)
     return adapter
 
 
@@ -181,8 +188,9 @@ def build_exchange(
     adapter; market data never authenticates.
     """
     exchange_id = config.exchange.id
-    if exchange_id not in SUPPORTED_VENUES:
-        msg = f"exchange {exchange_id!r} is not supported (supported: {sorted(SUPPORTED_VENUES)})"
+    # Config validation already refuses unknown venues; this guards direct callers.
+    if exchange_id not in _VENUE_CLASSES:
+        msg = f"exchange {exchange_id!r} is not supported (supported: {sorted(_VENUE_CLASSES)})"
         raise UnsupportedCapability(msg)
     exchange = _VENUE_CLASSES[exchange_id](
         {
