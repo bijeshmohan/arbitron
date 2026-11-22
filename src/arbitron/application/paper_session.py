@@ -118,7 +118,7 @@ class PaperSession:
             fill_model=fill_model
             or FillModel(
                 slippage_bps=config.paper.slippage_bps,
-                fee_rate=config.paper.fee_pct / Decimal(100),
+                fee_rate=config.paper_fee_pct / Decimal(100),
             ),
             clock=clock,
         )

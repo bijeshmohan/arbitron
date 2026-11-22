@@ -106,6 +106,12 @@ async def _check_config(args: argparse.Namespace) -> int:
         f"  sizing:      {config.sizing.entry_notional} {config.exchange.quote_currency} "
         f"per entry, max slippage {config.sizing.max_slippage_pct}%"
     )
+    venue = config.venue
+    print(
+        f"  fees:        venue taker {venue.default_taker_fee_pct}%, "
+        f"maker {venue.default_maker_fee_pct}%; paper {config.paper_fee_pct}%, "
+        f"backtest {config.backtest_fee_pct}%"
+    )
     print(f"  risk policy: {risk_policy_version(config)}")
     print(f"  credentials: {'present' if secrets.has_exchange_credentials else 'absent'}")
     print(f"  config hash: {config.config_hash()}")

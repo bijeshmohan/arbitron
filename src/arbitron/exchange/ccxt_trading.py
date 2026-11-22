@@ -313,6 +313,9 @@ def create_trading(
         msg = "authenticated venue access is only available in sandbox mode in this build"
         raise UnsupportedCapability(msg)
     exchange_id = config.exchange.id
+    if not config.venue.supports_trading:
+        msg = f"authenticated trading is not implemented for {exchange_id} in this build"
+        raise UnsupportedCapability(msg)
     if exchange is None:
         secrets = secrets or Secrets()
         if secrets.exchange_api_key is None or secrets.exchange_api_secret is None:

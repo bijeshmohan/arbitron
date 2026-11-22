@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from unittest.mock import Mock
 from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
@@ -17,10 +18,10 @@ import ccxt.async_support as ccxt_async
 import pytest
 
 from arbitron.clocks import ManualClock
-from arbitron.config.settings import ArbitronConfig
+from arbitron.config.settings import ArbitronConfig, Secrets
 from arbitron.domain.enums import OrderStatus, OrderType, Side, TimeInForce
 from arbitron.domain.orders import OrderIntent
-from arbitron.exchange.ccxt_adapter import venue_options
+from arbitron.exchange.ccxt_adapter import build_exchange, venue_options
 from arbitron.exchange.ccxt_trading import CcxtTrading, create_trading
 from arbitron.ports import errors as venue
 from tests.contract.conftest import load_fixture
@@ -447,9 +448,27 @@ class TestSandboxOnly:
         with pytest.raises(venue.UnsupportedCapability, match="not pointed at its sandbox"):
             create_trading(sandbox_config(), ManualClock(NOW), exchange=exchange)
 
-    def test_missing_credentials_are_refused(self) -> None:
-        from arbitron.config.settings import Secrets  # noqa: PLC0415
+    def test_hyperliquid_is_refused_before_secrets_are_read(self) -> None:
+        data = example_data()
+        data["app"]["mode"] = "sandbox"
+        data["exchange"].update({"sandbox": True, "id": "hyperliquid", "symbols": ["BTC/USDC"]})
+        secrets = Mock(spec=Secrets)
 
+        with pytest.raises(venue.UnsupportedCapability, match="not implemented for hyperliquid"):
+            create_trading(ArbitronConfig.model_validate(data), ManualClock(NOW), secrets=secrets)
+        assert secrets.mock_calls == []
+
+    def test_build_exchange_makes_a_spot_only_hyperliquid_instance(self) -> None:
+        data = example_data()
+        data["exchange"].update({"id": "hyperliquid", "symbols": ["BTC/USDC"]})
+
+        exchange: Any = build_exchange(ArbitronConfig.model_validate(data))
+
+        assert isinstance(exchange, ccxt_async.hyperliquid)
+        # CCXT merges its own defaults into the option; the market types are ours.
+        assert exchange.options["fetchMarkets"]["types"] == ["spot"]
+
+    def test_missing_credentials_are_refused(self) -> None:
         with pytest.raises(venue.AuthenticationFailure, match="must be set"):
             create_trading(
                 sandbox_config(),

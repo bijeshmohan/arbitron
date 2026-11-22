@@ -5,6 +5,7 @@ from decimal import Decimal
 import ccxt
 import pytest
 
+from arbitron.domain.venues import venue_profile
 from arbitron.exchange.capabilities import VenueCapabilities
 from arbitron.exchange.errors import translate, venue_errors
 from arbitron.exchange.mapping import (
@@ -174,7 +175,22 @@ class TestCapabilities:
         assert caps.fetch_ohlcv
         assert not caps.fetch_ticker
         with pytest.raises(venue.UnsupportedCapability, match="fetch_ticker, fetch_time"):
-            caps.require_market_data()
+            caps.require_market_data(venue_profile("binance"))
+
+    def test_hyperliquid_market_data_needs_order_book_not_ticker_or_time(self) -> None:
+        caps = VenueCapabilities.from_ccxt_has(
+            {"fetchOHLCV": True, "fetchOrderBook": True, "fetchTicker": "emulated"}
+        )
+
+        caps.require_market_data(venue_profile("hyperliquid"))  # no raise
+        with pytest.raises(venue.UnsupportedCapability, match="fetch_ticker, fetch_time"):
+            caps.require_market_data(venue_profile("binance"))
+
+    def test_hyperliquid_without_an_order_book_is_refused(self) -> None:
+        caps = VenueCapabilities.from_ccxt_has({"fetchOHLCV": True, "fetchOrderBook": "emulated"})
+
+        with pytest.raises(venue.UnsupportedCapability, match="fetch_order_book"):
+            caps.require_market_data(venue_profile("hyperliquid"))
 
 
 class TestRetry:

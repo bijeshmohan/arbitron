@@ -45,6 +45,7 @@ def test_check_config_accepts_example(capsys: pytest.CaptureFixture[str]) -> Non
     assert "config OK" in out
     assert "mode:        paper" in out
     assert "credentials: absent" in out
+    assert "fees:        venue taker 0.1%, maker 0.1%; paper 0.1%, backtest 0.1%" in out
 
 
 def test_check_config_reports_invalid_field(

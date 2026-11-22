@@ -16,14 +16,16 @@ import ccxt.async_support as ccxt_async
 
 from arbitron.config.settings import ArbitronConfig
 from arbitron.domain.market import Candle, Market, Ticker, Timeframe
+from arbitron.domain.venues import ClockSource, TickerSource, VenueProfile, venue_profile
 from arbitron.exchange.calls import VenueCaller
-from arbitron.exchange.capabilities import SUPPORTED_VENUES, VenueCapabilities
+from arbitron.exchange.capabilities import VenueCapabilities
 from arbitron.exchange.mapping import (
     candles_from_ohlcv,
     datetime_from_ms,
     datetime_to_ms,
     market_from_ccxt,
     ticker_from_ccxt,
+    ticker_from_order_book,
 )
 from arbitron.exchange.retry import RetryPolicy, Sleep
 from arbitron.ports.clock import Clock
@@ -37,8 +39,15 @@ _VENUE_OPTIONS: Mapping[str, dict[str, Any]] = {
         # Currency metadata needs authenticated endpoints and is not used.
         "fetchCurrencies": False,
     },
+    "hyperliquid": {
+        # Spot only: perpetuals are out of scope.
+        "fetchMarkets": {"types": ["spot"]},
+    },
 }
-_VENUE_CLASSES: Mapping[str, type[ccxt_async.Exchange]] = {"binance": ccxt_async.binance}
+_VENUE_CLASSES: Mapping[str, type[ccxt_async.Exchange]] = {
+    "binance": ccxt_async.binance,
+    "hyperliquid": ccxt_async.hyperliquid,
+}
 
 
 class CcxtMarketData:
@@ -55,9 +64,11 @@ class CcxtMarketData:
         concurrency: int,
         sleep: Sleep = asyncio.sleep,
         rng: random.Random | None = None,
+        profile: VenueProfile | None = None,
     ) -> None:
         self._exchange = exchange
         self.exchange_id = exchange_id
+        self._profile = profile if profile is not None else venue_profile(exchange_id)
         self._symbols = tuple(symbols)
         self._clock = clock
         self._close_grace = close_grace
@@ -130,10 +141,21 @@ class CcxtMarketData:
 
     async def fetch_ticker(self, symbol: str) -> Ticker:
         self._require_symbol(symbol)
+        if self._profile.ticker_source is TickerSource.ORDER_BOOK:
+            return await self._ticker_from_book(symbol)
         raw = await self._call("fetch_ticker", lambda: self._exchange.fetch_ticker(symbol))
         return ticker_from_ccxt(raw, exchange_id=self.exchange_id, symbol=symbol)
 
+    async def _ticker_from_book(self, symbol: str) -> Ticker:
+        raw = await self._call(
+            "fetch_order_book", lambda: self._exchange.fetch_order_book(symbol, 1)
+        )
+        return ticker_from_order_book(raw, exchange_id=self.exchange_id, symbol=symbol)
+
     async def fetch_time(self) -> datetime:
+        if self._profile.clock_source is ClockSource.ORDER_BOOK:
+            # The venue stamps each book snapshot; there is no server-time endpoint.
+            return (await self._ticker_from_book(self._symbols[0])).timestamp
         value = await self._call("fetch_time", self._exchange.fetch_time)
         if value is None:
             msg = "venue returned no server time"
@@ -167,8 +189,9 @@ def create_market_data(
         request_timeout=timedelta(milliseconds=config.exchange.request_timeout_ms),
         retry=RetryPolicy(attempts=config.market.read_retry_attempts),
         concurrency=config.market.request_concurrency,
+        profile=config.venue,
     )
-    adapter.capabilities.require_market_data()
+    adapter.capabilities.require_market_data(config.venue)
     return adapter
 
 
@@ -181,8 +204,9 @@ def build_exchange(
     adapter; market data never authenticates.
     """
     exchange_id = config.exchange.id
-    if exchange_id not in SUPPORTED_VENUES:
-        msg = f"exchange {exchange_id!r} is not supported (supported: {sorted(SUPPORTED_VENUES)})"
+    # Config validation already refuses unknown venues; this guards direct callers.
+    if exchange_id not in _VENUE_CLASSES:
+        msg = f"exchange {exchange_id!r} is not supported (supported: {sorted(_VENUE_CLASSES)})"
         raise UnsupportedCapability(msg)
     exchange = _VENUE_CLASSES[exchange_id](
         {

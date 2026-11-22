@@ -265,3 +265,69 @@ def test_zero_reserve_and_fee_are_allowed() -> None:
     config = ArbitronConfig.model_validate(data)
 
     assert config.risk.min_quote_reserve == 0
+
+
+def hyperliquid_data() -> dict[str, Any]:
+    data = example_data()
+    data["exchange"]["id"] = "hyperliquid"
+    data["exchange"]["symbols"] = ["BTC/USDC"]
+    return data
+
+
+def test_binance_fee_default_is_unchanged() -> None:
+    data = example_data()
+    del data["paper"]["fee_pct"]
+    del data["backtest"]["fee_pct"]
+
+    config = ArbitronConfig.model_validate(data)
+
+    assert config.venue.venue_id == "binance"
+    assert config.paper_fee_pct == Decimal("0.1")
+    assert config.backtest_fee_pct == Decimal("0.1")
+
+
+def test_hyperliquid_uses_its_venue_default_fee() -> None:
+    data = hyperliquid_data()
+    del data["paper"]["fee_pct"]
+    del data["backtest"]["fee_pct"]
+
+    config = ArbitronConfig.model_validate(data)
+
+    assert config.paper_fee_pct == Decimal("0.07")
+    assert config.backtest_fee_pct == Decimal("0.07")
+
+
+@pytest.mark.parametrize("section", ["paper", "backtest"])
+def test_explicit_zero_fee_wins_over_the_default(section: str) -> None:
+    data = hyperliquid_data()
+    data[section]["fee_pct"] = "0"
+
+    config = ArbitronConfig.model_validate(data)
+
+    assert getattr(config, f"{section}_fee_pct") == Decimal(0)
+
+
+def test_explicit_fee_wins_over_the_default() -> None:
+    data = hyperliquid_data()
+    data["paper"]["fee_pct"] = "0.1"
+
+    assert ArbitronConfig.model_validate(data).paper_fee_pct == Decimal("0.1")
+
+
+def test_unknown_exchange_is_a_config_error() -> None:
+    data = with_override("exchange", "id", "kraken")
+
+    with pytest.raises(ValidationError, match=r"supported: \['binance', 'hyperliquid'\]"):
+        ArbitronConfig.model_validate(data)
+
+
+def test_example_hyperliquid_config_is_valid() -> None:
+    config = load_config(EXAMPLE_PAPER.with_name("example.hyperliquid.toml"))
+
+    assert config.app.mode is Mode.PAPER
+    assert config.exchange.id == "hyperliquid"
+    assert config.exchange.symbols == ("BTC/USDC", "ETH/USDC")
+    assert config.paper_fee_pct == Decimal("0.07")
+    assert config.backtest_fee_pct == Decimal("0.07")
+    assert config.sizing.assumed_fee_pct == Decimal("0.07")
+    assert config.monitoring.http_port != 9108  # the deployed app holds 9108 on this host

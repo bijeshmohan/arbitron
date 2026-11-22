@@ -8,6 +8,7 @@ from typing import Any
 
 import ccxt
 import pytest
+from pydantic import ValidationError
 
 from arbitron.clocks import ManualClock
 from arbitron.config.settings import ArbitronConfig
@@ -269,8 +270,9 @@ class TestFactory:
         assert exchange.enableRateLimit is True  # type: ignore[attr-defined]
 
     def test_unsupported_venue_is_refused(self) -> None:
-        with pytest.raises(venue.UnsupportedCapability, match="not supported"):
-            create_market_data(make_config(id="kraken"), ManualClock(LAST_OPEN))
+        # Refused when the config is validated, before any adapter is built.
+        with pytest.raises(ValidationError, match="not supported"):
+            make_config(id="kraken")
 
     def test_sandbox_mode_switches_endpoints(self) -> None:
         data = example_data()
